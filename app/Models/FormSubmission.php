@@ -2,35 +2,55 @@
 
 namespace App\Models;
 
+use App\Queries\Submission\FieldLabelSnapshot;
 use App\States\Submission\Approved;
 use App\States\Submission\NeedsRevision;
 use App\States\Submission\Rejected;
 use App\States\Submission\SubmissionStatus;
-use App\States\Submission\Submitted;
-use App\States\Submission\UnderReview;
-use Carbon\Carbon;
+use App\States\Submission\Withdrawn;
+use App\Support\SubmissionPeriodGate;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Spatie\ModelStates\HasStates;
 
 /**
+ * @phpstan-import-type FieldLabel from FieldLabelSnapshot
+ *
  * @property int $id
  * @property int $form_id
  * @property int $submitted_by
  * @property int|null $parent_submission_id
- * @property Carbon|null $submitted_at
+ * @property int|null $form_phase_detail_id
+ * @property int|null $submission_period_id
+ * @property string|null $rejection_reason
+ * @property int|null $scheme_id
+ * @property int|null $trl_id
+ * @property int $last_completed_step
  * @property bool $is_submitted
+ * @property CarbonImmutable|null $cycle_opened_at
+ * @property list<FieldLabel>|null $submitted_field_labels
+ * @property string|null $title
  * @property-read bool $is_archived
  * @property SubmissionStatus|null $status
  * @property-read Form $form
  * @property-read User $submittedBy
+ * @property-read Scheme|null $scheme
+ * @property-read FormPhaseDetail|null $formPhaseDetail
+ * @property-read SubmissionPeriod|null $submissionPeriod
+ * @property-read TechnologyReadinessLevel|null $trl
  * @property-read Collection<int, FormFieldResponse> $formFieldResponses
  * @property-read Collection<int, SubmissionReviewer> $submissionReviewers
  * @property-read Collection<int, ReviewSummary> $reviewSummaries
+ * @property-read Collection<int, ReviewRound> $reviewRounds
  * @property-read Collection<int, BudgetLineItem> $budgetLineItems
+ * @property-read Collection<int, ResearchMember> $researchMembers
+ * @property-read Collection<int, SubmissionTargetOutput> $targetOutputs
  */
 class FormSubmission extends Model
 {
@@ -38,10 +58,18 @@ class FormSubmission extends Model
 
     protected $fillable = [
         'form_id',
+        'form_phase_detail_id',
+        'submission_period_id',
+        'rejection_reason',
+        'scheme_id',
+        'trl_id',
+        'last_completed_step',
         'is_submitted',
         'status',
         'submitted_by',
         'parent_submission_id',
+        'submitted_field_labels',
+        'title',
     ];
 
     protected $appends = ['is_archived'];
@@ -49,6 +77,11 @@ class FormSubmission extends Model
     protected $casts = [
         'status' => SubmissionStatus::class,
         'is_submitted' => 'boolean',
+        'last_completed_step' => 'integer',
+        // W126 — hanya laporan anak; kapan Operator mengaktifkan siklusnya.
+        'cycle_opened_at' => 'immutable_datetime',
+        // BR-FE-35 — teks pertanyaan dan opsi saat submit; null = baca teks terkini.
+        'submitted_field_labels' => 'array',
     ];
 
     /** @return BelongsTo<FormSubmission, $this> */
@@ -61,6 +94,15 @@ class FormSubmission extends Model
     public function children(): HasMany
     {
         return $this->hasMany(FormSubmission::class, 'parent_submission_id');
+    }
+
+    /**
+     * BR-SM-22 — judul yang dilihat orang: jawaban field `submission_title`, atau judul Form bila
+     * Form tidak punya field itu atau jawabannya kosong. Butuh relasi `form` (cukup `id,title`).
+     */
+    public function displayTitle(): string
+    {
+        return $this->title ?? $this->form->title;
     }
 
     /** @return BelongsTo<Form, $this> */
@@ -83,17 +125,28 @@ class FormSubmission extends Model
         return $this->hasMany(FormFieldResponse::class);
     }
 
-    public function scheme(): ?Scheme
+    /** @return BelongsTo<Scheme, $this> */
+    public function scheme(): BelongsTo
     {
-        $response = $this->formFieldResponses()
-            ->whereHas('formField', function ($query) {
-                $query->whereHas('fieldType', function ($query) {
-                    $query->where('name', 'scheme_selector');
-                });
-            })
-            ->first();
+        return $this->belongsTo(Scheme::class);
+    }
 
-        return $response ? Scheme::find($response->value) : null;
+    /** @return BelongsTo<FormPhaseDetail, $this> */
+    public function formPhaseDetail(): BelongsTo
+    {
+        return $this->belongsTo(FormPhaseDetail::class);
+    }
+
+    /** @return BelongsTo<SubmissionPeriod, $this> */
+    public function submissionPeriod(): BelongsTo
+    {
+        return $this->belongsTo(SubmissionPeriod::class);
+    }
+
+    /** @return BelongsTo<TechnologyReadinessLevel, $this> */
+    public function trl(): BelongsTo
+    {
+        return $this->belongsTo(TechnologyReadinessLevel::class, 'trl_id');
     }
 
     /** @return HasMany<SubmissionReviewer, $this> */
@@ -102,16 +155,128 @@ class FormSubmission extends Model
         return $this->hasMany(SubmissionReviewer::class);
     }
 
+    /**
+     * BR-REV-05/BR-REV-15 — yang ditampilkan dan dihitung hanyalah penugasan
+     * yang masih berlaku. Yang `replaced` tetap tersimpan sebagai sejarah,
+     * tapi ia bukan pekerjaan dan bukan anggota tim review hari ini.
+     *
+     * @return HasMany<SubmissionReviewer, $this>
+     */
+    public function activeSubmissionReviewers(): HasMany
+    {
+        return $this->submissionReviewers()->active();
+    }
+
     /** @return HasMany<ReviewSummary, $this> */
     public function reviewSummaries(): HasMany
     {
         return $this->hasMany(ReviewSummary::class);
     }
 
+    /**
+     * BR-REV-16 — putaran review pengajuan utama, lama dan baru. Laporan monev tidak punya.
+     *
+     * @return HasMany<ReviewRound, $this>
+     */
+    public function reviewRounds(): HasMany
+    {
+        return $this->hasMany(ReviewRound::class);
+    }
+
+    /** BR-REV-16 — putaran yang belum disimpulkan; paling banyak satu. */
+    public function runningReviewRound(): ?ReviewRound
+    {
+        return $this->reviewRounds()->whereNull('completed_at')->orderByDesc('number')->first();
+    }
+
+    /** BR-REV-16 — putaran bernomor terbesar, berjalan atau sudah selesai. */
+    public function latestReviewRound(): ?ReviewRound
+    {
+        return $this->reviewRounds()->orderByDesc('number')->first();
+    }
+
     /** @return HasMany<BudgetLineItem, $this> */
     public function budgetLineItems(): HasMany
     {
         return $this->hasMany(BudgetLineItem::class);
+    }
+
+    /** @return HasMany<SubmissionTargetOutput, $this> */
+    public function targetOutputs(): HasMany
+    {
+        return $this->hasMany(SubmissionTargetOutput::class);
+    }
+
+    /**
+     * BR-SM-21 — mitra eksternal yang dijanjikan saat mengajukan.
+     *
+     * @return HasMany<Partner, $this>
+     */
+    public function partners(): HasMany
+    {
+        return $this->hasMany(Partner::class);
+    }
+
+    /**
+     * BR-SM-20 — anggota mahasiswa; data, bukan akun.
+     *
+     * @return HasMany<StudentMember, $this>
+     */
+    public function studentMembers(): HasMany
+    {
+        return $this->hasMany(StudentMember::class);
+    }
+
+    /** @return HasMany<ResearchMember, $this> */
+    public function researchMembers(): HasMany
+    {
+        return $this->hasMany(ResearchMember::class);
+    }
+
+    /**
+     * BR-SM-07 — akses level submission, lapis terpisah dari FormAccessControl.
+     */
+    public function isAccessibleBy(User $user): bool
+    {
+        if ($user->can('submissions.view-all')) {
+            return true;
+        }
+
+        if ($this->submitted_by === $user->id) {
+            return true;
+        }
+
+        if ($this->hasActiveResearchMember($user)) {
+            return true;
+        }
+
+        return $this->hasAssignedReviewer($user);
+    }
+
+    /**
+     * W123 — tim laporan anak adalah tim induknya; laporan tidak punya `research_members` sendiri.
+     */
+    public function teamSubmissionId(): int
+    {
+        return $this->parent_submission_id ?? $this->id;
+    }
+
+    private function hasActiveResearchMember(User $user): bool
+    {
+        return ResearchMember::query()
+            ->where('form_submission_id', $this->teamSubmissionId())
+            ->where('status', 'active')
+            ->whereHas('userProfile', fn ($query) => $query->where('user_id', $user->id))
+            ->exists();
+    }
+
+    /** BR-SM-07 — reviewer yang penugasannya masih aktif; dipakai juga alasan baca-saja luaran (W143). */
+    public function hasAssignedReviewer(User $user): bool
+    {
+        return $this->submissionReviewers()
+            ->where('status', 'active')
+            ->whereHas('reviewer', fn ($query) => $query->where('user_id', $user->id))
+            ->exists();
     }
 
     public function reviewComments()
@@ -133,8 +298,8 @@ class FormSubmission extends Model
         );
     }
 
-    // NEW: Get all reviewer form assignments through submission reviewers
-    public function reviewerFormAssignments()
+    /** @return HasManyThrough<ReviewerFormAssignment, SubmissionReviewer, $this> */
+    public function reviewerFormAssignments(): HasManyThrough
     {
         return $this->hasManyThrough(
             ReviewerFormAssignment::class,
@@ -146,143 +311,53 @@ class FormSubmission extends Model
         );
     }
 
-    // NEW: Get all review form responses
-    public function reviewFormResponses()
+    /**
+     * BR-RO-01 — luaran yang terwujud dari pengajuan ini.
+     *
+     * @return HasMany<ResearchOutput, $this>
+     */
+    public function researchOutputs(): HasMany
     {
-        return $this->hasManyThrough(
-            ReviewFormResponse::class,
-            ReviewerFormAssignment::class,
-            'submission_reviewer_id',
-            'reviewer_form_assignment_id',
-            'id',
-            'id'
-        )->whereIn(
-            'reviewer_form_assignments.submission_reviewer_id',
-            $this->submissionReviewers()->pluck('id')
-        );
+        return $this->hasMany(ResearchOutput::class);
     }
 
-    // NEW: Get submitted review form responses
-    public function submittedReviewFormResponses()
+    /**
+     * BR-RO-02 — jenis pengajuan (Research / CommunityService), diturunkan lewat
+     * skema, bukan kolom: salinannya akan jadi sumber kedua yang bisa menyimpang.
+     * Pengajuan tanpa skema memang tidak punya jenis.
+     */
+    public function submissionType(): ?SubmissionType
     {
-        return $this->reviewFormResponses()->where('review_form_responses.status', 'submitted');
+        return $this->scheme?->submissionType;
     }
 
-    // NEW: Check if all reviewers have completed their evaluations
-    public function allReviewersCompletedEvaluations(): bool
+    /**
+     * **Active Submission** — status bukan REJECTED/WITHDRAWN. Satu definisi untuk
+     * BR-SM-01 (ADR 0005), BR-IAM-05, dan BR-SCH-01. `whereNotState`, bukan
+     * `whereNotIn`: kolomnya menyimpan morph name ("rejected"), bukan nama kelas.
+     *
+     * @param  Builder<FormSubmission>  $query
+     * @return Builder<FormSubmission>
+     */
+    public function scopeActive($query)
     {
-        $reviewersWithPendingEvaluations = $this->submissionReviewers()
-            ->where('evaluation_status', 'pending')
-            ->count();
-
-        return $reviewersWithPendingEvaluations === 0;
+        return $query->whereNotState('status', [Rejected::class, Withdrawn::class]);
     }
 
-    // NEW: Check if any reviewer has pending evaluations
-    public function hasPendingEvaluations(): bool
-    {
-        return $this->submissionReviewers()
-            ->where('evaluation_status', 'pending')
-            ->exists();
-    }
-
-    // NEW: Get reviewers with completed evaluations
-    public function reviewersWithCompletedEvaluations()
-    {
-        return $this->submissionReviewers()
-            ->where('evaluation_status', 'completed')
-            ->with(['reviewer.user', 'reviewer']);
-    }
-
-    // NEW: Get reviewers with pending evaluations
-    public function reviewersWithPendingEvaluations()
-    {
-        return $this->submissionReviewers()
-            ->where('evaluation_status', 'pending')
-            ->with(['reviewer.user', 'reviewer']);
-    }
-
-    // NEW: Get evaluation completion statistics
-    public function getEvaluationStats(): array
-    {
-        $totalReviewers = $this->submissionReviewers()->count();
-        $completedEvaluations = $this->submissionReviewers()
-            ->where('evaluation_status', 'completed')
-            ->count();
-        $pendingEvaluations = $this->submissionReviewers()
-            ->where('evaluation_status', 'pending')
-            ->count();
-        $noEvaluationRequired = $this->submissionReviewers()
-            ->where('evaluation_status', 'not_required')
-            ->count();
-
-        $completionPercentage = $totalReviewers > 0
-            ? round((($completedEvaluations + $noEvaluationRequired) / $totalReviewers) * 100)
-            : 100;
-
-        return [
-            'total_reviewers' => $totalReviewers,
-            'completed_evaluations' => $completedEvaluations,
-            'pending_evaluations' => $pendingEvaluations,
-            'no_evaluation_required' => $noEvaluationRequired,
-            'completion_percentage' => $completionPercentage,
-            'all_completed' => $pendingEvaluations === 0,
-        ];
-    }
-
-    // NEW: Auto-assign evaluation forms to new reviewers
-    public function autoAssignEvaluationForms(): void
-    {
-        $formPhaseDetail = $this->getFormPhaseDetail();
-
-        if (!$formPhaseDetail || !$formPhaseDetail->hasReviewEvaluationForms()) {
-            return;
-        }
-
-        // Get reviewers without any form assignments
-        $reviewersNeedingAssignment = $this->submissionReviewers()
-            ->whereDoesntHave('reviewerFormAssignments')
-            ->get();
-
-        foreach ($reviewersNeedingAssignment as $submissionReviewer) {
-            /** @var SubmissionReviewer $submissionReviewer */
-            // Assign all required forms by default
-            /** @var Collection<int, ReviewEvaluationForm> $requiredForms */
-            $requiredForms = $formPhaseDetail->requiredReviewEvaluationForms()->get();
-
-            foreach ($requiredForms as $form) {
-                $submissionReviewer->assignForm($form->id, true, $this->getEvaluationDueDate());
-            }
-        }
-    }
-
+    /**
+     * BR-SM-13 — draft terarsip kalau periodenya tak lagi menampung kerja apa pun.
+     * Predikatnya dipinjam dari SubmissionPeriodGate supaya hanya ada satu salinan
+     * yang ingat `is_force_closed`.
+     */
     public function resolveIsArchived(): bool
     {
-        if ($this->is_submitted) {
+        // BR-SM-13 (v2.5) — laporan anak tidak pernah terarsip: jendelanya BR-MON-05, dan
+        // pengarsipan akan mengunci laporan yang masih bisa dibuka override.
+        if ($this->is_submitted || $this->parent_submission_id !== null) {
             return false;
         }
 
-        $phaseDetail = $this->getFormPhaseDetail();
-
-        if (!$phaseDetail) {
-            return false;
-        }
-
-        $period = SubmissionPeriod::whereHas('submissionPeriodPhases', function ($query) use ($phaseDetail) {
-            $query->where('form_phase_id', $phaseDetail->form_phase_id);
-        })->first();
-
-        if (!$period) {
-            return false;
-        }
-
-        if ($period->is_force_closed) {
-            return true;
-        }
-
-        return $period->submissionDates->every(
-            fn ($date) => Carbon::parse($date->datetime)->isPast()
-        );
+        return SubmissionPeriodGate::isFullyClosed($this->submissionPeriod);
     }
 
     public function getIsArchivedAttribute(): bool
@@ -300,274 +375,40 @@ class FormSubmission extends Model
     // NEW: Get form phase for this submission
     public function getFormPhaseDetail(): ?FormPhaseDetail
     {
-        return FormPhaseDetail::whereHas('formAccessControl', function ($query) {
-            $query->where('form_id', $this->form_id);
-        })->first();
+        return $this->formPhaseDetail;
     }
 
-    // NEW: Get evaluation due date based on submission period
-    protected function getEvaluationDueDate(): ?\DateTime
-    {
-        $formPhaseDetail = $this->getFormPhaseDetail();
-
-        if ($formPhaseDetail === null || $formPhaseDetail->formPhase === null) {
-            return null;
-        }
-
-        // Get submission period for this form phase
-        $submissionPeriod = SubmissionPeriod::whereHas('submissionPeriodPhases', function ($query) use ($formPhaseDetail) {
-            $query->where('form_phase_id', $formPhaseDetail->form_phase_id);
-        })->first();
-
-        if (!$submissionPeriod) {
-            return null;
-        }
-
-        // Get the latest submission date as due date
-        /** @var SubmissionDate|null $latestDate */
-        $latestDate = $submissionPeriod->submissionDates()
-            ->orderBy('date', 'desc')
-            ->first();
-
-        return $latestDate ? $latestDate->date : null;
-    }
-
-    // NEW: Check if evaluation phase is complete and can proceed to discussions
-    public function canProceedToDiscussions(): bool
-    {
-        return $this->allReviewersCompletedEvaluations();
-    }
-
-    // Updated: Enhanced canProceed method
+    /**
+     * BR-MON-02 — tahap ini boleh dilanjutkan: sudah disubmit dan, bila detailnya
+     * `needs_review`, evaluasinya selesai tanpa ReviewSummary `open` (register #13).
+     * Bukan `status instanceof Approved`: laporan monev tidak pernah APPROVED.
+     */
     public function canProceed(): bool
     {
-        return $this->status instanceof Approved
-            && $this->allReviewersApproved()
-            && $this->allReviewersCompletedEvaluations();
+        if (!$this->is_submitted) {
+            return false;
+        }
+
+        $detail = $this->formPhaseDetail;
+
+        // Detail yang tidak menuntut evaluasi selesai begitu laporannya masuk.
+        // Menunggu evaluasi yang memang tidak ada akan mengunci siklus
+        // berikutnya selamanya.
+        if ($detail === null || !$detail->needs_review) {
+            return true;
+        }
+
+        if ($this->submissionReviewers()->unsettledEvaluation()->exists()) {
+            return false;
+        }
+
+        // BR-FE-06 — ulir yang masih terbuka berarti masih ada yang diminta
+        // diperbaiki.
+        return !$this->reviewSummaries()->where('status', 'open')->exists();
     }
 
     public function needsRevision(): bool
     {
         return $this->status instanceof NeedsRevision;
-    }
-
-    // Updated: Check if discussions are allowed
-    public function discussionsAllowed(): bool
-    {
-        // Discussions are allowed if:
-        // 1. No evaluation forms required, OR
-        // 2. All required evaluations are completed
-        return !$this->hasPendingEvaluations();
-    }
-
-    // Existing helper methods
-    public function allReviewersApproved()
-    {
-        $totalReviewers = $this->submissionReviewers()->count();
-        $approvedReviewers = $this->reviewSummaries()
-            ->where('status', 'resolved')
-            ->distinct('reviewer_id')
-            ->count('reviewer_id');
-
-        return $totalReviewers > 0 && $totalReviewers === $approvedReviewers;
-    }
-
-    public function hasRejectedReviews()
-    {
-        return $this->reviewSummaries()
-            ->where('status', 'closed')
-            ->exists();
-    }
-
-    public function hasRevisionsRequested()
-    {
-        return $this->reviewSummaries()
-            ->where('status', 'open')
-            ->exists();
-    }
-
-    public function hasAnyReviews()
-    {
-        return $this->reviewSummaries()->exists();
-    }
-
-    // Updated: Enhanced status update considering evaluations
-    public function updateStatusBasedOnReviews()
-    {
-        $targetState = null;
-
-        if ($this->hasPendingEvaluations()) {
-            $targetState = UnderReview::class;
-        } elseif ($this->hasRejectedReviews()) {
-            $targetState = Rejected::class;
-        } elseif ($this->hasRevisionsRequested()) {
-            $targetState = NeedsRevision::class;
-        } elseif ($this->allReviewersApproved()) {
-            $targetState = Approved::class;
-        } elseif ($this->hasAnyReviews()) {
-            $targetState = UnderReview::class;
-        }
-
-        if (!$targetState) {
-            return;
-        }
-
-        if ($this->status->canTransitionTo($targetState)) {
-            $this->status->transitionTo($targetState);
-        } elseif ($this->status->canTransitionTo(UnderReview::class)) {
-            $this->status->transitionTo(UnderReview::class);
-
-            /** @phpstan-ignore-next-line */
-            if ($this->status->canTransitionTo($targetState)) {
-                $this->status->transitionTo($targetState);
-            }
-        }
-    }
-
-    public function getActiveReviewThreadsCount(): int
-    {
-        return $this->reviewSummaries()->where('status', 'open')->count();
-    }
-
-    public function getResolvedReviewThreadsCount(): int
-    {
-        return $this->reviewSummaries()->where('status', 'resolved')->count();
-    }
-
-    public function hasOpenReviewThreads(): bool
-    {
-        return $this->reviewSummaries()->where('status', 'open')->exists();
-    }
-
-    public function assignReviewer(int $reviewerId): ReviewSummary
-    {
-        /** @var ReviewSummary $summary */
-        $summary = $this->reviewSummaries()->firstOrCreate(
-            ['reviewer_id' => $reviewerId],
-            ['status' => 'open']
-        );
-
-        return $summary;
-    }
-
-    public function removeReviewer(int $reviewerId): bool
-    {
-        return $this->reviewSummaries()
-            ->where('reviewer_id', $reviewerId)
-            ->delete() > 0;
-    }
-
-    // NEW: Get evaluation forms summary for this submission
-    public function getEvaluationFormsSummary(): array
-    {
-        $formPhaseDetail = $this->getFormPhaseDetail();
-
-        if (!$formPhaseDetail) {
-            return [];
-        }
-
-        /** @var Collection<int, ReviewEvaluationForm> $evaluationForms */
-        $evaluationForms = $formPhaseDetail->activeReviewEvaluationForms()->get();
-        $summary = [];
-
-        foreach ($evaluationForms as $form) {
-            $assignedCount = $this->reviewerFormAssignments()
-                ->where('review_evaluation_form_id', $form->id)
-                ->count();
-
-            $completedCount = $this->reviewerFormAssignments()
-                ->where('review_evaluation_form_id', $form->id)
-                ->whereHas('reviewFormResponse', function ($query) {
-                    $query->where('status', 'submitted');
-                })
-                ->count();
-
-            $summary[] = [
-                'form' => $form,
-                'assigned_count' => $assignedCount,
-                'completed_count' => $completedCount,
-                'completion_percentage' => $assignedCount > 0
-                    ? round(($completedCount / $assignedCount) * 100)
-                    : 0,
-            ];
-        }
-
-        return $summary;
-    }
-
-    // Check if form phase has any review evaluation forms
-    public function hasReviewEvaluationForms(): bool
-    {
-        $formPhaseDetail = $this->getFormPhaseDetail();
-
-        return $formPhaseDetail ? $formPhaseDetail->hasReviewEvaluationForms() : false;
-    }
-
-    // Check if review evaluation forms are required for this submission
-    public function requiresReviewEvaluation(): bool
-    {
-        $formPhaseDetail = $this->getFormPhaseDetail();
-
-        return $formPhaseDetail ? $formPhaseDetail->requiresEvaluationCompletion() : false;
-    }
-
-    // Check if a specific reviewer has completed their evaluation (or if evaluation not required)
-    public function reviewerCanCreateThreads(int $reviewerId): bool
-    {
-        // If no evaluation forms required, reviewer can create threads immediately
-        if (!$this->hasReviewEvaluationForms()) {
-            return true;
-        }
-
-        // Check if reviewer is assigned
-        $submissionReviewer = $this->submissionReviewers()
-            ->where('reviewer_id', $reviewerId)
-            ->first();
-
-        if ($submissionReviewer === null) {
-            return false;
-        }
-
-        /** @var SubmissionReviewer $submissionReviewer */
-        return $submissionReviewer->canCreateDiscussionThreads();
-    }
-
-    // Check if a specific reviewer can participate in discussions
-    public function reviewerCanParticipate(int $reviewerId): bool
-    {
-        // Same logic as canCreateThreads
-        return $this->reviewerCanCreateThreads($reviewerId);
-    }
-
-    // Get evaluation requirements summary
-    public function getEvaluationRequirements(): array
-    {
-        if (!$this->hasReviewEvaluationForms()) {
-            return [
-                'required' => false,
-                'has_forms' => false,
-                'message' => 'No evaluation forms required for this submission.',
-            ];
-        }
-
-        $formPhaseDetail = $this->getFormPhaseDetail();
-        if (!$formPhaseDetail) {
-            return [
-                'required' => false,
-                'has_forms' => false,
-                'message' => 'No form phase detail found.',
-            ];
-        }
-
-        $formsCount = $formPhaseDetail->review_evaluation_forms_count;
-        $requiredCount = $formPhaseDetail->required_review_evaluation_forms_count;
-
-        return [
-            'required' => true,
-            'has_forms' => true,
-            'total_forms' => $formsCount,
-            'required_forms' => $requiredCount,
-            'message' => 'This submission requires evaluation forms to be completed before creating review threads.',
-        ];
     }
 }

@@ -1,0 +1,57 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+
+import AppBanner from '@/Components/app/AppBanner.vue'
+import InfoGrid from '@/Components/app/InfoGrid.vue'
+import SectionCard from '@/Components/app/SectionCard.vue'
+import { formatDate } from '@/lib/format'
+import type { SubmissionDecision } from '@/types/submission-page'
+
+const props = defineProps<{ decision: SubmissionDecision }>()
+
+const approved = computed(() => props.decision.outcome === 'approved')
+
+const opening = computed(() => {
+    const verb = approved.value ? 'disetujui' : 'ditolak'
+    return props.decision.decidedAt
+        ? `Pengajuan ini ${verb} Operator LPPM pada ${formatDate(props.decision.decidedAt)}.`
+        : `Pengajuan ini ${verb} Operator LPPM.`
+})
+
+const details = computed(() => [
+    { label: 'Diputuskan oleh', value: props.decision.decidedBy ?? '-' },
+    { label: 'Tanggal', value: formatDate(props.decision.decidedAt) },
+])
+</script>
+
+<template>
+    <!-- BR-REV-05 — persetujuan selalu keputusan manual Operator (ADR 0018) -->
+    <div v-if="approved" class="flex flex-col gap-4">
+        <AppBanner tone="success">
+            {{ opening }} Persetujuan selalu merupakan keputusan manual, tidak pernah terjadi
+            otomatis dari hasil penilaian dari penilai.
+        </AppBanner>
+        <SectionCard title="Keputusan">
+            <InfoGrid :items="details" />
+        </SectionCard>
+    </div>
+    <div v-else class="flex flex-col gap-4">
+        <!-- BR-REV-07 — penolakan selalu keputusan manual, tidak pernah otomatis dari skor -->
+        <AppBanner tone="denial">
+            {{ opening }} Penolakan selalu merupakan keputusan manual, tidak pernah terjadi otomatis
+            dari hasil penilaian dari penilai.
+        </AppBanner>
+        <SectionCard title="Alasan Penolakan">
+            <InfoGrid :items="details" />
+            <p class="text-sm whitespace-pre-line text-muted-foreground">
+                {{ decision.reason ?? '-' }}
+            </p>
+        </SectionCard>
+        <SectionCard title="Yang Dapat Anda Lakukan">
+            <AppBanner tone="info">
+                Pengajuan yang ditolak tidak dapat diubah atau dikirim ulang. Anda tetap dapat
+                mengajukan proposal baru ke skema yang sama pada periode ini.
+            </AppBanner>
+        </SectionCard>
+    </div>
+</template>

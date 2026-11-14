@@ -1,0 +1,92 @@
+<script setup lang="ts">
+// Frame: REVIEWER-03-02
+import { Head, Link } from '@inertiajs/vue3'
+import { ArrowRight, History } from 'lucide-vue-next'
+import { computed } from 'vue'
+
+import DataTable from '@/Components/app/DataTable.vue'
+import EmptyState from '@/Components/app/EmptyState.vue'
+import FilterToolbar from '@/Components/app/FilterToolbar.vue'
+import PageHeader from '@/Components/app/PageHeader.vue'
+import PaginationBar from '@/Components/app/PaginationBar.vue'
+import { Badge } from '@/Components/ui/badge'
+import { Button } from '@/Components/ui/button'
+import { useFilters } from '@/composables/useFilters'
+import AppLayout from '@/Layouts/AppLayout.vue'
+import { formatDate } from '@/lib/format'
+import type { BadgeVariant } from '@/types/BadgeVariant'
+import type { HistoryPageProps, ReviewHistoryRow } from '@/types/review'
+import type { FilterSelectSpec } from '@/types/submission-page'
+
+const props = defineProps<HistoryPageProps>()
+
+const { filters } = useFilters('reviewer.history.index', props.filters)
+
+const filtered = computed(() => Object.values(props.filters).some((value) => value !== ''))
+
+const selects = computed((): FilterSelectSpec<'year'>[] => [
+    { key: 'year', label: 'Tahun', allLabel: 'Semua tahun', options: props.yearOptions },
+])
+
+// Skor dan tipe konteks tidak digambar: keduanya tidak tersimpan (W22).
+const columns = [
+    { key: 'title', label: 'Judul' },
+    { key: 'scheme', label: 'Skema' },
+    { key: 'context', label: 'Konteks' },
+    { key: 'completedAt', label: 'Selesai' },
+    { key: 'status', label: 'Status' },
+    { key: 'action', label: '' },
+]
+
+const variants: Record<ReviewHistoryRow['status'], BadgeVariant> = {
+    completed: 'secondary',
+    pending: 'default',
+    replaced: 'outline',
+}
+</script>
+
+<template>
+    <Head title="Riwayat Penilaian" />
+    <AppLayout>
+        <PageHeader
+            title="Riwayat Penilaian"
+            subtitle="Semua evaluasi yang pernah Anda kerjakan, hanya baca, termasuk siklus monev sebelumnya."
+        />
+        <FilterToolbar
+            v-model:search="filters.search"
+            :selects="selects"
+            :values="filters"
+            search-placeholder="Cari judul pengajuan atau formulir..."
+            search-label="Cari judul pengajuan atau formulir"
+            @select="(key, value) => (filters[key] = value)"
+        />
+        <DataTable :rows="history.data" :columns="columns">
+            <template #cell-title="{ row }">
+                <span class="font-medium">{{ row.title }}</span>
+            </template>
+            <template #cell-scheme="{ row }">{{ row.scheme ?? '-' }}</template>
+            <template #cell-context="{ row }">{{ row.context ?? '-' }}</template>
+            <template #cell-completedAt="{ row }">{{ formatDate(row.completedAt) }}</template>
+            <template #cell-status="{ row }">
+                <Badge :variant="variants[row.status]">{{ row.statusLabel }}</Badge>
+            </template>
+            <template #cell-action="{ row }">
+                <!-- BR-REV-10 — penugasan yang digantikan tidak membuka ringkasan lagi -->
+                <Button v-if="row.summaryUrl" as-child variant="ghost" size="sm">
+                    <Link :href="row.summaryUrl">Lihat <ArrowRight class="size-4" /></Link>
+                </Button>
+            </template>
+            <template #empty>
+                <EmptyState
+                    :icon="History"
+                    :title="
+                        filtered
+                            ? 'Tidak ada riwayat yang cocok dengan filter'
+                            : 'Belum ada riwayat penilaian'
+                    "
+                />
+            </template>
+        </DataTable>
+        <PaginationBar :page="history" />
+    </AppLayout>
+</template>

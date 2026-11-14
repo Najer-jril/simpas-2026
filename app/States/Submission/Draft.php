@@ -13,7 +13,7 @@ class Draft extends SubmissionStatus
 
     public function label(): string
     {
-        return 'Draft';
+        return 'Draf';
     }
 
     public function color(): string
@@ -28,6 +28,6 @@ class Draft extends SubmissionStatus
 
     public function variant(): string
     {
-        return 'secondary';
+        return 'outline';
     }
 }

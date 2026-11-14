@@ -1,0 +1,8 @@
+# Business rule perilaku yang BELUM punya skenario. Menyusut ke nol saat wave
+# terakhir mendarat. Aturan plafonnya sama dengan pending.txt.
+#
+# BR yang bukan perilaku TIDAK ditulis di sini — tempatnya non-behavioral.md.
+#
+# max: 0
+
+

@@ -2,9 +2,12 @@
 
 namespace App\Models;
 
+use App\Support\PhaseAccessGate;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
@@ -14,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property-read SubmissionReviewer $submissionReviewer
  * @property-read ReviewEvaluationForm $reviewEvaluationForm
  * @property-read ReviewFormResponse|null $reviewFormResponse
+ * @property-read Collection<int, ReviewFormResponse> $supersededResponses
  */
 class ReviewerFormAssignment extends Model
 {
@@ -53,11 +57,23 @@ class ReviewerFormAssignment extends Model
     }
 
     /**
+     * BR-REV-19 — jawaban yang berlaku; yang digantikan versi baru menjadi riwayat.
+     *
      * @return HasOne<ReviewFormResponse, $this>
      */
     public function reviewFormResponse(): HasOne
     {
-        return $this->hasOne(ReviewFormResponse::class);
+        return $this->hasOne(ReviewFormResponse::class)->whereNull('superseded_at');
+    }
+
+    /**
+     * BR-REV-19 — jawaban lama yang digantikan saat Operator menerapkan versi baru; tetap terbaca.
+     *
+     * @return HasMany<ReviewFormResponse, $this>
+     */
+    public function supersededResponses(): HasMany
+    {
+        return $this->hasMany(ReviewFormResponse::class)->whereNotNull('superseded_at')->orderBy('superseded_at');
     }
 
     // Scopes
@@ -71,27 +87,6 @@ class ReviewerFormAssignment extends Model
         return $query->where('is_required', true);
     }
 
-    public function scopeOptional($query): Builder
-    {
-        return $query->where('is_required', false);
-    }
-
-    public function scopeOverdue($query): Builder
-    {
-        return $query->where('due_date', '<', now())
-            ->whereDoesntHave('reviewFormResponse', function ($q) {
-                $q->where('status', 'submitted');
-            });
-    }
-
-    public function scopeDueSoon($query, int $hours = 24): Builder
-    {
-        return $query->whereBetween('due_date', [now(), now()->addHours($hours)])
-            ->whereDoesntHave('reviewFormResponse', function ($q) {
-                $q->where('status', 'submitted');
-            });
-    }
-
     // Helper methods
     public function isOverdue(): bool
     {
@@ -102,38 +97,26 @@ class ReviewerFormAssignment extends Model
         return $this->due_date->isPast() && !$this->isCompleted();
     }
 
-    public function isDueSoon(int $hours = 24): bool
+    // BR-FE-17, BR-FE-08 — tenggat evaluasi bisa dibuka kembali hanya lewat override detail pemiliknya (ADR 0014, W25).
+    public function isClosedByDeadline(): bool
     {
-        if (!$this->due_date || $this->isCompleted()) {
+        if (!$this->isOverdue()) {
             return false;
         }
 
-        return $this->due_date->isBetween(now(), now()->addHours($hours));
+        $submission = $this->submissionReviewer->formSubmission;
+        // BR-FE-10 — override langkah pengajuan yang dinilai; pengajuan tanpa langkah tidak punya pintu override.
+        $detail = $submission->formPhaseDetail;
+        if ($detail === null) {
+            return true;
+        }
+
+        return PhaseAccessGate::activeOverride($submission, $detail) === null;
     }
 
     public function isCompleted(): bool
     {
         return $this->reviewFormResponse?->status === 'submitted';
-    }
-
-    public function getStatus(): string
-    {
-        if (!$this->reviewFormResponse) {
-            return 'not_started';
-        }
-
-        return $this->reviewFormResponse->status;
-    }
-
-    public function getStatusLabel(): string
-    {
-        return match ($this->getStatus()) {
-            'not_started' => 'Not Started',
-            'draft' => 'In Progress',
-            'submitted' => 'Completed',
-            'locked' => 'Locked',
-            default => 'Unknown'
-        };
     }
 
     public function getDaysUntilDue(): ?int
@@ -143,33 +126,5 @@ class ReviewerFormAssignment extends Model
         }
 
         return (int) now()->diffInDays($this->due_date, false);
-    }
-
-    public function getHoursUntilDue(): ?int
-    {
-        if (!$this->due_date) {
-            return null;
-        }
-
-        return (int) now()->diffInHours($this->due_date, false);
-    }
-
-    // Check if assignment can be completed (not locked and active)
-    public function canBeCompleted(): bool
-    {
-        return $this->is_active &&
-            (!$this->due_date || !$this->due_date->isPast()) &&
-            $this->getStatus() !== 'locked';
-    }
-
-    // Auto-lock if past due date
-    public function autoLockIfOverdue(): void
-    {
-        if ($this->isOverdue() && $this->reviewFormResponse) {
-            $this->reviewFormResponse->update([
-                'status' => 'locked',
-                'locked_at' => now(),
-            ]);
-        }
     }
 }

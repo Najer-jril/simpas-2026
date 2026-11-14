@@ -13,28 +13,31 @@ class FieldTypeSeeder extends Seeder
      */
     public function run(): void
     {
-        try {
-            DB::transaction(function () {
-                $fieldTypes = [
-                    'text',
-                    'email',
-                    'number',
-                    'textarea',
-                    'select',
-                    'radio',
-                    'checkbox',
-                    'date',
-                    'time',
-                    'file',
-                    'url',
-                    'phone',
-                ];
+        DB::transaction(function () {
+            $fieldTypes = [
+                'text',
+                'email',
+                'number',
+                'textarea',
+                'select',
+                'radio',
+                'checkbox',
+                'date',
+                'time',
+                'file',
+                'url',
+                'phone',
+                // UI pattern yang menulis ke kolom sungguhan, bukan form_field_responses
+                // (BR-SCH-09).
+                'scheme_selector',
+                'trl_selector',
+                // BR-SM-22 — field teks yang jawabannya menjadi judul pengajuan.
+                'submission_title',
+            ];
 
-                foreach ($fieldTypes as $type) {
-                    FieldType::firstOrCreate(['name' => $type]);
-                }
-            });
-        } catch (\Exception $e) {
-        }
+            foreach ($fieldTypes as $type) {
+                FieldType::firstOrCreate(['name' => $type]);
+            }
+        });
     }
 }

@@ -1,0 +1,80 @@
+<?php
+
+// Visibilitas pengumuman: publik = semua orang; privat = hanya pengguna login;
+// yang `expired_at`-nya lewat tidak tampil di mana pun selain layar admin.
+
+use App\Models\Announcement;
+use App\Models\User;
+use Inertia\Testing\AssertableInertia as Assert;
+
+function makeAnnouncement(string $type = 'public', ?DateTimeInterface $expiredAt = null, string $title = 'Pengumuman'): Announcement
+{
+    return Announcement::create([
+        'title' => $title,
+        'content' => 'Isi pengumuman.',
+        'type' => $type,
+        'expired_at' => $expiredAt,
+        'created_by' => User::factory()->create()->id,
+    ]);
+}
+
+it('hides private announcements from guests on the detail page', function () {
+    $private = makeAnnouncement('private');
+
+    $this->get(route('announcements.detail', $private))->assertNotFound();
+});
+
+it('hides expired announcements from guests on the detail page', function () {
+    $expired = makeAnnouncement('public', now()->subDay());
+
+    $this->get(route('announcements.detail', $expired))->assertNotFound();
+});
+
+it('shows a public announcement to guests on the detail page', function () {
+    $public = makeAnnouncement('public');
+
+    $this->get(route('announcements.detail', $public))->assertOk();
+});
+
+it('shows a private announcement to a signed-in user on the detail page', function () {
+    $private = makeAnnouncement('private');
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('announcements.detail', $private))
+        ->assertOk();
+});
+
+it('hides expired announcements from signed-in users on the detail page', function () {
+    $expired = makeAnnouncement('private', now()->subDay());
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('announcements.detail', $expired))
+        ->assertNotFound();
+});
+
+it('leaves expired announcements out of the user list', function () {
+    makeAnnouncement('private', null, 'Masih berlaku');
+    makeAnnouncement('private', now()->subDay(), 'Kedaluwarsa');
+
+    $this->actingAs(User::factory()->create())
+        ->get(route('user.announcements.index'))
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Announcement/IndexPage')
+            ->has('announcements.data', 1)
+            ->where('announcements.data.0.title', 'Masih berlaku'));
+});
+
+it('marks only the announcements the user has read in the user list', function () {
+    $user = User::factory()->create();
+    $read = makeAnnouncement('private', null, 'Sudah');
+    $unread = makeAnnouncement('private', null, 'Belum');
+    $read->announcementReader()->attach($user->id);
+    $read->announcementReader()->attach(User::factory()->create()->id);
+
+    $this->actingAs($user)
+        ->get(route('user.announcements.index'))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('announcements.data', fn ($rows) => collect($rows)
+                ->mapWithKeys(fn ($row) => [$row['id'] => $row['isRead']])
+                ->all() == [$unread->id => false, $read->id => true]));
+});

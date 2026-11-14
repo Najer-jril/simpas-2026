@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -11,26 +12,32 @@ use Illuminate\Support\Carbon;
 /**
  * @property int $id
  * @property int $reviewer_form_assignment_id
+ * @property int $review_evaluation_form_version_id BR-REV-18 — versi yang diisi jawaban ini
  * @property string $status
  * @property string|null $final_notes
  * @property Carbon|null $submitted_at
  * @property Carbon|null $locked_at
+ * @property Carbon|null $superseded_at BR-REV-19 — terisi = riwayat, digantikan versi baru
  * @property-read ReviewerFormAssignment $reviewerFormAssignment
+ * @property-read ReviewEvaluationFormVersion $reviewEvaluationFormVersion
  * @property-read Collection<int, ReviewFormFieldResponse> $reviewFormFieldResponses
  */
 class ReviewFormResponse extends Model
 {
     protected $fillable = [
         'reviewer_form_assignment_id',
+        'review_evaluation_form_version_id',
         'status',
         'submitted_at',
         'locked_at',
+        'superseded_at',
         'final_notes',
     ];
 
     protected $casts = [
         'submitted_at' => 'datetime',
         'locked_at' => 'datetime',
+        'superseded_at' => 'datetime',
     ];
 
     /**
@@ -41,6 +48,12 @@ class ReviewFormResponse extends Model
         return $this->belongsTo(ReviewerFormAssignment::class);
     }
 
+    /** @return BelongsTo<ReviewEvaluationFormVersion, $this> */
+    public function reviewEvaluationFormVersion(): BelongsTo
+    {
+        return $this->belongsTo(ReviewEvaluationFormVersion::class);
+    }
+
     /**
      * @return HasMany<ReviewFormFieldResponse, $this>
      */
@@ -49,20 +62,25 @@ class ReviewFormResponse extends Model
         return $this->hasMany(ReviewFormFieldResponse::class);
     }
 
-    // Scopes
-    public function scopeDraft($query)
+    /**
+     * BR-REV-19 — jawaban berlaku atas Formulir Evaluasi pin itu dari kursi aktif angkatan × langkahnya:
+     * yang dibuka ulang saat versi baru diterapkan. Lembar reviewer yang digantikan sudah menjadi
+     * riwayat (BR-REV-10) dan tidak diisi ulang siapa pun.
+     *
+     * @param  Builder<self>  $query
+     * @return Builder<self>
+     */
+    public function scopeCurrentInCohortOf(Builder $query, EvaluationFormPin $pin): Builder
     {
-        return $query->where('status', 'draft');
-    }
-
-    public function scopeSubmitted($query)
-    {
-        return $query->where('status', 'submitted');
-    }
-
-    public function scopeLocked($query)
-    {
-        return $query->where('status', 'locked');
+        return $query
+            ->whereNull('superseded_at')
+            ->whereHas('reviewerFormAssignment', fn (Builder $assignment) => $assignment
+                ->where('review_evaluation_form_id', $pin->review_evaluation_form_id)
+                ->whereHas('submissionReviewer', fn (Builder $seat) => $seat
+                    ->where('status', 'active')
+                    ->whereHas('formSubmission', fn (Builder $submission) => $submission
+                        ->where('submission_period_id', $pin->submission_period_id)
+                        ->where('form_phase_detail_id', $pin->form_phase_detail_id))));
     }
 
     // Status checks
@@ -91,44 +109,10 @@ class ReviewFormResponse extends Model
         return $this->status === 'draft' && $this->hasRequiredFieldsCompleted();
     }
 
-    // Submit the form
-    public function submit(): bool
-    {
-        if (!$this->canBeSubmitted()) {
-            return false;
-        }
-
-        $this->update([
-            'status' => 'submitted',
-            'submitted_at' => now(),
-        ]);
-
-        // Update parent reviewer evaluation status
-        $this->updateReviewerEvaluationStatus();
-
-        return true;
-    }
-
-    // Lock the form (usually due to deadline)
-    public function lock(): bool
-    {
-        if ($this->isLocked()) {
-            return false;
-        }
-
-        $this->update([
-            'status' => 'locked',
-            'locked_at' => now(),
-        ]);
-
-        return true;
-    }
-
     // Check if all required fields are completed
     public function hasRequiredFieldsCompleted(): bool
     {
-        $reviewForm = $this->reviewerFormAssignment->reviewEvaluationForm;
-        $requiredFields = $reviewForm->reviewFormFields()->where('is_required', true)->get();
+        $requiredFields = $this->reviewEvaluationFormVersion->reviewFormFields()->where('is_required', true)->get();
 
         foreach ($requiredFields as $field) {
             $response = $this->reviewFormFieldResponses()
@@ -143,32 +127,6 @@ class ReviewFormResponse extends Model
         return true;
     }
 
-    // Get completion percentage
-    public function getCompletionPercentage(): int
-    {
-        $reviewForm = $this->reviewerFormAssignment->reviewEvaluationForm;
-        $totalFields = $reviewForm->reviewFormFields()->count();
-
-        if ($totalFields === 0) {
-            return 100;
-        }
-
-        $completedFields = $this->reviewFormFieldResponses()
-            ->whereNotNull('value')
-            ->where('value', '!=', '')
-            ->count();
-
-        return min(100, round(($completedFields / $totalFields) * 100));
-    }
-
-    // Get response for specific field
-    public function getFieldResponse(int $fieldId): ?string
-    {
-        return $this->reviewFormFieldResponses()
-            ->where('review_form_field_id', $fieldId)
-            ->value('value');
-    }
-
     // Save field response
     public function saveFieldResponse(int $fieldId, ?string $value): ReviewFormFieldResponse
     {
@@ -176,66 +134,5 @@ class ReviewFormResponse extends Model
             ['review_form_field_id' => $fieldId],
             ['value' => $value]
         );
-    }
-
-    // Update reviewer evaluation status based on all assigned forms
-    protected function updateReviewerEvaluationStatus(): void
-    {
-        $submissionReviewer = $this->reviewerFormAssignment->submissionReviewer;
-
-        // Check if all required forms are completed
-        $allRequiredCompleted = $submissionReviewer->reviewerFormAssignments()
-            ->required()
-            ->active()
-            ->whereDoesntHave('reviewFormResponse', function ($q) {
-                $q->where('status', 'submitted');
-            })
-            ->doesntExist();
-
-        if ($allRequiredCompleted) {
-            $submissionReviewer->update(['evaluation_status' => 'completed']);
-        }
-    }
-
-    // Generate summary for ReviewSummary integration
-    public function generateSummaryNotes(): string
-    {
-        $reviewForm = $this->reviewerFormAssignment->reviewEvaluationForm;
-        $summary = "Evaluation: {$reviewForm->title}\n\n";
-
-        foreach ($reviewForm->reviewFormFields as $field) {
-            $response = $this->getFieldResponse($field->id);
-            if ($response) {
-                $summary .= "{$field->label}: {$response}\n";
-            }
-        }
-
-        if ($this->final_notes) {
-            $summary .= "\nAdditional Notes:\n{$this->final_notes}";
-        }
-
-        return trim($summary);
-    }
-
-    // Get status label for display
-    public function getStatusLabelAttribute(): string
-    {
-        return match ($this->status) {
-            'draft' => 'Draft',
-            'submitted' => 'Submitted',
-            'locked' => 'Locked',
-            default => 'Unknown'
-        };
-    }
-
-    // Get status color for UI
-    public function getStatusColorAttribute(): string
-    {
-        return match ($this->status) {
-            'draft' => 'yellow',
-            'submitted' => 'green',
-            'locked' => 'red',
-            default => 'gray'
-        };
     }
 }

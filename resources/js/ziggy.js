@@ -14,18 +14,6 @@ const Ziggy = {
         },
         'profile.edit': { uri: 'profile', methods: ['GET', 'HEAD'] },
         'profile.update': { uri: 'profile', methods: ['PATCH'] },
-        'profile.destroy': { uri: 'profile', methods: ['DELETE'] },
-        'review-summaries.complete': {
-            uri: 'review-summaries\/{reviewSummary}\/complete',
-            methods: ['PATCH'],
-            parameters: ['reviewSummary'],
-        },
-        'review-summaries.update-status': {
-            uri: 'review-summaries\/{reviewSummary}\/status',
-            methods: ['PATCH'],
-            parameters: ['reviewSummary'],
-            bindings: { reviewSummary: 'id' },
-        },
         'review-threads.store': {
             uri: 'submissions\/{submission}\/review-threads',
             methods: ['POST'],
@@ -41,13 +29,6 @@ const Ziggy = {
         'review-attachments.download': {
             uri: 'review-attachments\/download',
             methods: ['GET', 'HEAD'],
-        },
-        'submissions.index': { uri: 'submissions', methods: ['GET', 'HEAD'] },
-        'submissions.update-status': {
-            uri: 'submissions\/{submission}\/status',
-            methods: ['PATCH'],
-            parameters: ['submission'],
-            bindings: { submission: 'id' },
         },
         'reviewer.evaluation-form.start': {
             uri: 'reviewer\/evaluation-forms\/start',
@@ -96,32 +77,16 @@ const Ziggy = {
         'user.announcements.index': { uri: 'user\/announcements', methods: ['GET', 'HEAD'] },
         'user.announcements.markRead': {
             uri: 'user\/announcements\/{announcement}\/markRead',
-            methods: ['GET', 'HEAD'],
+            methods: ['POST'],
             parameters: ['announcement'],
             bindings: { announcement: 'id' },
-        },
-        'user.form-phase': {
-            uri: 'user\/submission-period\/{period}\/form-phase\/{phase}',
-            methods: ['GET', 'HEAD'],
-            parameters: ['period', 'phase'],
-            bindings: { period: 'id', phase: 'id' },
         },
         'user.form-submission.save-draft': {
             uri: 'user\/form-submission\/save-draft',
             methods: ['POST'],
         },
         'user.form-submission.submit': { uri: 'user\/form-submission\/submit', methods: ['POST'] },
-        'user.form-submission.data': {
-            uri: 'user\/form-submission\/data',
-            methods: ['GET', 'HEAD'],
-        },
         'user.submissions.index': { uri: 'user\/submissions', methods: ['GET', 'HEAD'] },
-        'user.submissions.period': {
-            uri: 'user\/submissions\/period\/{period}',
-            methods: ['GET', 'HEAD'],
-            parameters: ['period'],
-            bindings: { period: 'id' },
-        },
         'user.submissions.show': {
             uri: 'user\/submissions\/{submission}',
             methods: ['GET', 'HEAD'],
@@ -136,17 +101,6 @@ const Ziggy = {
             parameters: ['submission'],
             bindings: { submission: 'id' },
         },
-        'reviewer.review-summaries.complete': {
-            uri: 'reviewer\/review-summaries\/{reviewSummary}\/complete',
-            methods: ['PATCH'],
-            parameters: ['reviewSummary'],
-        },
-        'reviewer.review-summaries.update-status': {
-            uri: 'reviewer\/review-summaries\/{reviewSummary}\/status',
-            methods: ['PATCH'],
-            parameters: ['reviewSummary'],
-            bindings: { reviewSummary: 'id' },
-        },
         'reviewer.review-threads.store': {
             uri: 'reviewer\/submissions\/{submission}\/review-threads',
             methods: ['POST'],
@@ -160,19 +114,6 @@ const Ziggy = {
             bindings: { reviewSummary: 'id' },
         },
         'admin.dashboard': { uri: 'admin\/dashboard', methods: ['GET', 'HEAD'] },
-        'admin.stats.get-form-phase': {
-            uri: 'admin\/stats\/get-form-phases',
-            methods: ['GET', 'HEAD'],
-        },
-        'admin.stats.get-form-submission': {
-            uri: 'admin\/stats\/get-form-submissions',
-            methods: ['GET', 'HEAD'],
-        },
-        'admin.stats.get-reviewer': {
-            uri: 'admin\/stats\/get-reviewers',
-            methods: ['GET', 'HEAD'],
-        },
-        'admin.stats.get-user': { uri: 'admin\/stats\/get-users', methods: ['GET', 'HEAD'] },
         'admin.stats.form-phase': { uri: 'admin\/stats\/form-phases', methods: ['GET', 'HEAD'] },
         'admin.stats.form-submission': {
             uri: 'admin\/stats\/form-submissions',
@@ -180,7 +121,6 @@ const Ziggy = {
         },
         'admin.stats.reviewer': { uri: 'admin\/stats\/reviewers', methods: ['GET', 'HEAD'] },
         'admin.stats.user': { uri: 'admin\/stats\/users', methods: ['GET', 'HEAD'] },
-        'admin.stats.data': { uri: 'admin\/stats\/data', methods: ['GET', 'HEAD'] },
         'admin.users.index': { uri: 'admin\/users', methods: ['GET', 'HEAD'] },
         'admin.users.create': { uri: 'admin\/users\/create', methods: ['GET', 'HEAD'] },
         'admin.users.store': { uri: 'admin\/users\/store', methods: ['POST'] },
@@ -196,20 +136,9 @@ const Ziggy = {
             parameters: ['user'],
             bindings: { user: 'id' },
         },
-        'admin.users.delete': {
-            uri: 'admin\/users\/{user}',
-            methods: ['DELETE'],
-            parameters: ['user'],
-            bindings: { user: 'id' },
-        },
         'admin.roles.index': { uri: 'admin\/roles', methods: ['GET', 'HEAD'] },
         'admin.roles.create': { uri: 'admin\/roles\/create', methods: ['GET', 'HEAD'] },
         'admin.roles.store': { uri: 'admin\/roles', methods: ['POST'] },
-        'admin.roles.show': {
-            uri: 'admin\/roles\/{role}',
-            methods: ['GET', 'HEAD'],
-            parameters: ['role'],
-        },
         'admin.roles.edit': {
             uri: 'admin\/roles\/{role}\/edit',
             methods: ['GET', 'HEAD'],
@@ -229,18 +158,7 @@ const Ziggy = {
             bindings: { role: 'id' },
         },
         'admin.permissions.index': { uri: 'admin\/permissions', methods: ['GET', 'HEAD'] },
-        'admin.permissions.create': { uri: 'admin\/permissions\/create', methods: ['GET', 'HEAD'] },
         'admin.permissions.store': { uri: 'admin\/permissions', methods: ['POST'] },
-        'admin.permissions.show': {
-            uri: 'admin\/permissions\/{permission}',
-            methods: ['GET', 'HEAD'],
-            parameters: ['permission'],
-        },
-        'admin.permissions.edit': {
-            uri: 'admin\/permissions\/{permission}\/edit',
-            methods: ['GET', 'HEAD'],
-            parameters: ['permission'],
-        },
         'admin.permissions.update': {
             uri: 'admin\/permissions\/{permission}',
             methods: ['PUT', 'PATCH'],
@@ -252,26 +170,6 @@ const Ziggy = {
             methods: ['DELETE'],
             parameters: ['permission'],
             bindings: { permission: 'id' },
-        },
-        'admin.users.assign-role': {
-            uri: 'admin\/users\/{user}\/assign-role',
-            methods: ['POST'],
-            parameters: ['user'],
-        },
-        'admin.users.revoke-role': {
-            uri: 'admin\/users\/{user}\/revoke-role',
-            methods: ['DELETE'],
-            parameters: ['user'],
-        },
-        'admin.users.assign-permissions': {
-            uri: 'admin\/users\/{user}\/give-permission',
-            methods: ['POST'],
-            parameters: ['user'],
-        },
-        'admin.users.revoke-permissions': {
-            uri: 'admin\/users\/{user}\/revoke-permission',
-            methods: ['DELETE'],
-            parameters: ['user'],
         },
         'admin.forms.index': { uri: 'admin\/forms', methods: ['GET', 'HEAD'] },
         'admin.forms.create': { uri: 'admin\/forms\/create', methods: ['GET', 'HEAD'] },
@@ -379,30 +277,6 @@ const Ziggy = {
             parameters: ['submission'],
             bindings: { submission: 'id' },
         },
-        'admin.submissions.remove-reviewer': {
-            uri: 'admin\/submissions\/{submission}\/reviewers\/{reviewer}',
-            methods: ['DELETE'],
-            parameters: ['submission', 'reviewer'],
-            bindings: { submission: 'id', reviewer: 'id' },
-        },
-        'admin.submissions.available-reviewers': {
-            uri: 'admin\/submissions\/{submission}\/available-reviewers',
-            methods: ['GET', 'HEAD'],
-            parameters: ['submission'],
-            bindings: { submission: 'id' },
-        },
-        'admin.submissions.available-evaluation-forms': {
-            uri: 'admin\/submissions\/{submission}\/available-evaluation-forms',
-            methods: ['GET', 'HEAD'],
-            parameters: ['submission'],
-            bindings: { submission: 'id' },
-        },
-        'admin.submissions.evaluation-status': {
-            uri: 'admin\/submissions\/{submission}\/evaluation-status',
-            methods: ['GET', 'HEAD'],
-            parameters: ['submission'],
-            bindings: { submission: 'id' },
-        },
         'admin.submissions.assign-evaluation-forms': {
             uri: 'admin\/submissions\/{submission}\/reviewers\/{reviewer}\/assign-forms',
             methods: ['POST'],
@@ -415,21 +289,9 @@ const Ziggy = {
             parameters: ['submission'],
             bindings: { submission: 'id' },
         },
-        'admin.submissions.form-assignments': {
-            uri: 'admin\/submissions\/{submission}\/form-assignments',
-            methods: ['GET', 'HEAD'],
-            parameters: ['submission'],
-            bindings: { submission: 'id' },
-        },
         'admin.form-assignments.remove': {
             uri: 'admin\/form-assignments\/{assignment}',
             methods: ['DELETE'],
-            parameters: ['assignment'],
-            bindings: { assignment: 'id' },
-        },
-        'admin.form-assignments.update': {
-            uri: 'admin\/form-assignments\/{assignment}',
-            methods: ['PATCH'],
             parameters: ['assignment'],
             bindings: { assignment: 'id' },
         },
@@ -438,17 +300,6 @@ const Ziggy = {
             methods: ['POST'],
             parameters: ['submission'],
             bindings: { submission: 'id' },
-        },
-        'admin.review-summaries.update-status': {
-            uri: 'admin\/review-summaries\/{reviewSummary}\/status',
-            methods: ['PATCH'],
-            parameters: ['reviewSummary'],
-            bindings: { reviewSummary: 'id' },
-        },
-        'admin.review-summaries.destroy': {
-            uri: 'admin\/review-summaries\/{reviewSummary}',
-            methods: ['DELETE'],
-            parameters: ['reviewSummary'],
         },
         'admin.review-comments.store': {
             uri: 'admin\/review-summaries\/{reviewSummary}\/comments',
@@ -589,33 +440,6 @@ const Ziggy = {
             methods: ['DELETE'],
             parameters: ['submission_period'],
         },
-        'admin.faculties.index': { uri: 'admin\/faculties', methods: ['GET', 'HEAD'] },
-        'admin.faculties.create': { uri: 'admin\/faculties\/create', methods: ['GET', 'HEAD'] },
-        'admin.faculties.store': { uri: 'admin\/faculties', methods: ['POST'] },
-        'admin.faculties.show': {
-            uri: 'admin\/faculties\/{faculty}',
-            methods: ['GET', 'HEAD'],
-            parameters: ['faculty'],
-            bindings: { faculty: 'id' },
-        },
-        'admin.faculties.edit': {
-            uri: 'admin\/faculties\/{faculty}\/edit',
-            methods: ['GET', 'HEAD'],
-            parameters: ['faculty'],
-            bindings: { faculty: 'id' },
-        },
-        'admin.faculties.update': {
-            uri: 'admin\/faculties\/{faculty}',
-            methods: ['PUT', 'PATCH'],
-            parameters: ['faculty'],
-            bindings: { faculty: 'id' },
-        },
-        'admin.faculties.destroy': {
-            uri: 'admin\/faculties\/{faculty}',
-            methods: ['DELETE'],
-            parameters: ['faculty'],
-            bindings: { faculty: 'id' },
-        },
         'admin.announcements.index': { uri: 'admin\/announcements', methods: ['GET', 'HEAD'] },
         'admin.announcements.create': {
             uri: 'admin\/announcements\/create',
@@ -646,33 +470,6 @@ const Ziggy = {
             parameters: ['announcement'],
             bindings: { announcement: 'id' },
         },
-        'admin.faculties.study-programs': {
-            uri: 'admin\/study-programs',
-            methods: ['GET', 'HEAD'],
-        },
-        'admin.faculties.study-programs.create': {
-            uri: 'admin\/study-programs\/create',
-            methods: ['GET', 'HEAD'],
-        },
-        'admin.faculties.study-programs.store': { uri: 'admin\/study-programs', methods: ['POST'] },
-        'admin.faculties.study-programs.edit': {
-            uri: 'admin\/study-programs\/{studyProgram}\/edit',
-            methods: ['GET', 'HEAD'],
-            parameters: ['studyProgram'],
-            bindings: { studyProgram: 'id' },
-        },
-        'admin.faculties.study-programs.update': {
-            uri: 'admin\/study-programs\/{studyProgram}',
-            methods: ['PUT'],
-            parameters: ['studyProgram'],
-            bindings: { studyProgram: 'id' },
-        },
-        'admin.faculties.study-programs.destroy': {
-            uri: 'admin\/study-programs\/{studyProgram}',
-            methods: ['DELETE'],
-            parameters: ['studyProgram'],
-            bindings: { studyProgram: 'id' },
-        },
         'admin.submission-date-labels.store': {
             uri: 'admin\/submission-date-labels',
             methods: ['POST'],
@@ -686,19 +483,11 @@ const Ziggy = {
             methods: ['POST'],
         },
         'admin.api.study-programs': { uri: 'admin\/api\/study-programs', methods: ['GET', 'HEAD'] },
-        'admin.api.form-access-controls': {
-            uri: 'admin\/api\/form-access-controls',
-            methods: ['GET', 'HEAD'],
-        },
         'admin.form-phases.update-status': {
             uri: 'admin\/api\/form-phases\/{formPhase}\/status',
             methods: ['PATCH'],
             parameters: ['formPhase'],
             bindings: { formPhase: 'id' },
-        },
-        'admin.maintenance.auto-lock-overdue': {
-            uri: 'admin\/maintenance\/auto-lock-overdue-assignments',
-            methods: ['POST'],
         },
         register: { uri: 'register', methods: ['GET', 'HEAD'] },
         login: { uri: 'login', methods: ['GET', 'HEAD'] },

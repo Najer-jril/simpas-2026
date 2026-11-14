@@ -1,7 +1,7 @@
 # BC: Research Output
 
 **Klasifikasi:** 🟡 Supporting Domain  
-**Versi:** 2.3  
+**Versi:** 2.5  
 **Status:** Draft
 
 ---
@@ -130,7 +130,28 @@ CREATE INDEX idx_research_outputs_metadata ON research_outputs USING GIN (metada
 | `ResearchMember` role `co_investigator` | Bisa tambah dan edit                        |
 | `ResearchMember` role `member`          | Read only                                   |
 | Reviewer (via SubmissionReviewer)       | Read only                                   |
-| Operator / Admin                        | Full access via `outputs.manage` permission |
+| Operator / Admin                        | Full access via `outputs.manage` **dan** `submissions.view-all` |
+
+> **v2.5 — jalan staf butuh dua izin.** Peran `researcher` juga memegang `outputs.manage`
+> ([identity v2.7](../generic/02_identity_access.md)) untuk melaporkan luaran timnya sendiri.
+> Kalau `outputs.manage` saja sudah membuka jalan staf, setiap peneliti bisa menyunting luaran
+> pengajuan siapa pun, termasuk yang ia tidak ikuti. Staf karenanya dikenali dari
+> `outputs.manage` bersama `submissions.view-all` (membaca semua pengajuan, BR-SM-07).
+
+> **Kecocokan dengan target luaran sengaja TIDAK ditegakkan.** `SubmissionTargetOutput`
+> (BR-SM-14/15) adalah luaran yang *dijanjikan*; `ResearchOutput` yang *terwujud*.
+> Penelitian memang menyimpang — janji artikel jurnal bisa berakhir sebagai paten.
+> Memaksa keduanya cocok akan mendorong peneliti berbohong di target atau tidak
+> melaporkan luaran nyata; dua-duanya lebih buruk daripada ketidakcocokan itu sendiri.
+>
+> Prinsipnya: **batasi yang harus benar, ukur yang sebaiknya benar.** Taksonomi dibatasi
+> (BR-SM-14, BR-RO-05); pemenuhan janji adalah **metrik pelaporan**, bukan aturan yang
+> memblokir. Tidak ada validasi lintas-aggregate di sini.
+
+Tabel di atas hanya menjawab sumbu **siapa**. Sumbu **kapan** ditentukan deadline
+`FormPhaseDetail` tempat luaran bergantung (BR-RO-08), dan sumbu **keadaan** oleh
+BR-RO-01 (induk wajib APPROVED). Ketiganya harus lolos — lihat
+[ADR 0014](../../../adr/0014-time-boxed-access-single-override-mechanism.md).
 
 ---
 
@@ -144,7 +165,9 @@ CREATE INDEX idx_research_outputs_metadata ON research_outputs USING GIN (metada
 | BR-RO-04 | `output_type = 'ip'` dan `output_type = 'prototype'` wajib punya minimal satu file di `research_output_files` |
 | BR-RO-05 | `output_type` harus terdaftar di `output_type_definitions` — tidak bisa arbitrary string                      |
 | BR-RO-06 | Research Output tetap ada sebagai data historis setelah submission WITHDRAWN — tidak dihapus                  |
-| BR-RO-07 | Hanya `submitted_by` dan `co_investigator` yang bisa tambah atau edit output — `member` read only             |
+| BR-RO-07 | Di dalam **tim penelitian**, hanya `submitted_by` dan `co_investigator` yang bisa tambah atau edit output; `member` dan Reviewer read only. Operator dan Admin pemegang `outputs.manage` tetap bisa menyunting — luaran memasok pelaporan LPPM, dan koreksi datanya memang tugas staf. Ini **berbeda** dari anggaran (BR-BUD-02/09), yang daftar tertutupnya menjadi invarian domain di [ADR 0015](../../../adr/0015-gate-before-never-bypasses-domain-invariants.md): anggaran adalah komitmen peneliti, luaran adalah laporan fakta |
+| BR-RO-08 | Menambah dan menyunting Research Output tunduk pada deadline `FormPhaseDetail` tempatnya bergantung (Detail "Upload Luaran"). Lewat deadline luaran **tetap terbaca** (BR-FE-15) tapi tidak bisa diubah, kecuali ada `FormSubmissionOverride` yang masih berlaku (BR-FE-08). Tidak ada mekanisme batas waktu tersendiri untuk luaran — lihat [ADR 0014](../../../adr/0014-time-boxed-access-single-override-mechanism.md). **v2.5:** detail Upload Luaran dikenali dari Batas Submit-nya yang berjenis `output` (Batas Akhir, [BR-FE-25/26](../generic/01_form_engine.md)), dalam tahap yang sama dan sesudah detail pengajuannya. Tahap tanpa detail itu tidak membatasi waktu penulisan luaran. Penutupan paksa periode (BR-SCH-07) tidak menutupnya |
+| BR-RO-09 | `metadata` wajib memenuhi field yang ditandai `required` pada definisi tipenya di `output_type_definitions`. Tanpa ini "taksonomi dibatasi" hanya benar separuh: tipenya terkendali, isinya tidak — dan luaran berisi objek kosong lolos ke pelaporan sebagai kegiatan yang seolah terlaporkan. Field yang tidak `required` boleh kosong, termasuk `metadata.end_date` untuk PKS berjalan (BR-RO-03) |
 
 ---
 

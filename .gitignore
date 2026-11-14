@@ -24,3 +24,19 @@ yarn-error.log
 /.zed
 playwright-report/
 test-results/
+
+# Dump database legacy untuk migrasi data (113MB, melebihi batas GitHub)
+/database/*.sql
+
+# Artefak tooling agent — bukan dokumentasi proyek
+/docs/superpowers/
+.claude/
+
+# Impeccable dipasang per-harness; isinya termasuk binary linux-x64 ~18 MB.
+# Tooling, bukan kode proyek — sejajar dengan .claude/ di atas.
+/.github/skills/
+/.github/agents/
+/.github/hooks/
+
+# Workspace subagent-driven development (scratch, git-ignored)
+/.superpowers/

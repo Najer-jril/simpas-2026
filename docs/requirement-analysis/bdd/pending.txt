@@ -1,0 +1,16 @@
+# Skenario yang sudah ditulis sebagai spec tapi belum punya test Pest.
+#
+# Plafon di bawah ditegakkan mesin (BddCoverageTest assertion 8). Arahnya ditegakkan
+# review PR — sama persis pembagian kerja yang berlaku untuk excludePaths di
+# phpstan-strict.neon.
+#
+# Plafon hanya boleh NAIK saat skenario baru ditulis, dan wajib TURUN saat skenario
+# lama diimplementasikan. Ia tidak pernah naik untuk menampung utang yang menumpuk.
+#
+# Gelombang 2 docs/design/gap-closure.md menaikkannya 0 → 62 pada 2026-09-19 dan
+# menurunkannya kembali ke 0 di hari yang sama: 62 skenario ditulis untuk kapabilitas
+# yang layarnya sudah ada tapi belum punya pintu masuk, lalu seluruhnya
+# diimplementasikan. Kenaikan itu utang yang lahir bersama spec-nya, bukan utang lama
+# yang menumpuk — dan ia tidak sempat menginap.
+#
+# max: 0

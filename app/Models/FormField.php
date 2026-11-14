@@ -8,16 +8,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 
 /**
  * @property int $id
  * @property int $form_id
  * @property int $field_type_id
  * @property string $label
- * @property string|null $helper_text
  * @property bool $is_required
  * @property Carbon|null $required_since
  * @property int $order
+ * @property int $form_field_responses_count dimuat `withCount` FormGeneral (BR-FE-23)
  * @property-read Form|null $form
  * @property-read FieldType|null $fieldType
  * @property-read Collection<int, FormFieldOption> $formFieldOptions
@@ -47,6 +48,24 @@ class FormField extends Model
 
             if ($field->is_required) {
                 $field->required_since = Carbon::now();
+            }
+        });
+
+        // BR-FE-23 — bentuk field terkunci begitu ada jawaban, beda dari
+        // BR-FE-11 (kewajiban) dan BR-FE-12 (keberadaan). `FormFieldResponse.value`
+        // tanpa tipe: ubah tipe field merusak baca/validasi jawaban lama diam-diam.
+        static::updating(function (FormField $field): void {
+            if (!$field->isDirty('field_type_id')) {
+                return;
+            }
+
+            $terjawab = FormFieldResponse::query()->where('form_field_id', $field->id)->count();
+
+            if ($terjawab > 0) {
+                throw ValidationException::withMessages([
+                    'field_type_id' => "Tipe isian ini tidak dapat diubah karena sudah ada {$terjawab} jawaban yang tersimpan. "
+                        .'Tambahkan isian baru dengan tipe yang diinginkan; isian lama tetap terbaca apa adanya.',
+                ]);
             }
         });
 

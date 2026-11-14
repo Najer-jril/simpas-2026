@@ -2,218 +2,101 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\Announcement\PublishAnnouncement;
+use App\Actions\Announcement\RetractAnnouncement;
+use App\Actions\Announcement\ReviseAnnouncement;
+use App\Data\View\Announcement\AnnouncementFormData;
+use App\Http\Requests\Announcement\AnnouncementRequest;
 use App\Models\Announcement;
-use App\Models\AnnouncementFile;
-use App\Models\AnnouncementUser;
-use Carbon\Carbon;
+use App\Queries\Announcement\ManagedAnnouncementList;
+use App\Queries\Announcement\ReaderAnnouncementDetail;
+use App\Queries\Announcement\ReaderAnnouncementList;
+use App\Queries\Announcement\VisibleAnnouncements;
+use App\Support\Announcement\AnnouncementAudience;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 
 class AnnouncementController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     */
-    public function index()
+    public function index(Request $request)
     {
-        $announcements = Announcement::with(['announcementFiles', 'announcementCreator'])
-            ->orderBy('created_at', 'desc')
-            ->paginate(10);
+        $search = $request->string('search')->trim()->value();
 
-        return Inertia::render('Announcements/IndexPage', [
-            'announcements' => $announcements,
+        return Inertia::render('Announcement/ManageIndexPage', [
+            'announcements' => ManagedAnnouncementList::run($search),
+            'filters' => ['search' => $search],
         ]);
     }
 
-    public function userIndex()
+    public function userIndex(Request $request)
     {
-        $announcements = Announcement::with(['announcementFiles'])
-            ->orderBy('created_at', 'desc')
-            ->paginate(10);
-
-        return Inertia::render('User/Announcements/IndexPage', [
-            'announcements' => $announcements,
+        return Inertia::render('Announcement/IndexPage', [
+            'announcements' => ReaderAnnouncementList::run($request->user()),
         ]);
     }
 
-    /**
-     * Show the form for creating a new resource.
-     */
     public function create()
     {
-        return Inertia::render('Announcements/CreatePage', [
-            'announcementFiles' => AnnouncementFile::all(),
-            'announcement' => new Announcement,
+        return Inertia::render('Announcement/FormPage', [
+            'announcement' => null,
+            'roleOptions' => AnnouncementAudience::options(),
         ]);
     }
 
-    /**
-     * Store a newly created resource in storage.
-     */
-    public function store(Request $request)
+    public function store(AnnouncementRequest $request)
     {
-        $validated = $request->validate([
-            'title' => 'required|string|max:255',
-            'content' => 'required|string',
-            'type' => 'required|in:public,private',
-            'expired_at' => 'nullable|date',
-            'files' => 'nullable|array',
-            'files.*' => 'file|mimes:jpg,png,pdf|max:2048',
-        ]);
-
-        DB::transaction(function () use ($validated, $request) {
-            $user = auth()->user();
-
-            $announcement = Announcement::create([
-                'title' => $validated['title'],
-                'content' => $validated['content'],
-                'expired_at' => $validated['expired_at'] ?? null,
-                'type' => $validated['type'],
-                'created_at' => Carbon::now('Asia/Makassar'),
-                'updated_at' => Carbon::now('Asia/Makassar'),
-                'created_by' => $user->id,
-            ]);
-
-            if ($request->hasFile('files')) {
-                foreach ($request->file('files') as $file) {
-                    $path = $file->store('announcements', 'public');
-
-                    AnnouncementFile::create([
-                        'announcement_id' => $announcement->id,
-                        'file_name' => $file->getClientOriginalName(),
-                        // 'file_path' => asset('storage/' . $path),
-                        'file_path' => $path, // buat prod
-                        'mime_type' => $file->getMimeType(),
-                        'file_size' => $file->getSize(),
-                    ]);
-                }
-            }
-        });
+        PublishAnnouncement::run($request->toInput(), $request->user());
 
         return redirect()->route('admin.announcements.index')
             ->with('success', 'Pengumuman berhasil dibuat.');
     }
 
-    /**
-     * Display the specified resource.
-     */
-    public function show(Announcement $announcement)
-    {
-        $announcement->load('announcementFiles', 'announcementCreator');
-
-        return Inertia::render('Announcements/ShowPage', [
-            'announcement' => $announcement,
-        ]);
-    }
-
-    /**
-     * Show the form for editing the specified resource.
-     */
+    // W35 — tanpa layar detail kelola: pengelola membaca isinya di FormPage.
     public function edit(Announcement $announcement)
     {
-        $announcement->load('announcementFiles');
-
-        return Inertia::render('Announcements/EditPage', [
-            'announcement' => $announcement,
+        return Inertia::render('Announcement/FormPage', [
+            'announcement' => AnnouncementFormData::of($announcement),
+            'roleOptions' => AnnouncementAudience::options(),
         ]);
     }
 
-    /**
-     * Update the specified resource in storage.
-     */
-    public function update(Request $request, Announcement $announcement)
+    public function update(AnnouncementRequest $request, Announcement $announcement)
     {
-        $validated = $request->validate([
-            'title' => 'required|string|max:255',
-            'content' => 'required|string',
-            'type' => 'required|in:public,private',
-            'expired_at' => 'nullable|date',
-            'files' => 'nullable|array',
-            'files.*' => 'file|mimes:jpg,png,pdf|max:2048',
-        ]);
-
-        DB::transaction(function () use ($validated, $request, $announcement) {
-            if ($request->has('deleted_files') && is_array($request->deleted_files)) {
-                foreach ($request->deleted_files as $fileId) {
-                    $file = AnnouncementFile::find($fileId);
-                    if ($file) {
-                        Storage::disk('public')->delete($file->file_path);
-                        $file->delete();
-                    }
-                }
-            }
-
-            $announcement->update([
-                'title' => $validated['title'],
-                'content' => $validated['content'],
-                'type' => $validated['type'],
-                'expired_at' => $validated['expired_at'] ?? null,
-                'updated_at' => now(),
-            ]);
-
-            if ($request->hasFile('files')) {
-                foreach ($request->file('files') as $file) {
-                    $path = $file->store('announcements', 'public');
-
-                    AnnouncementFile::create([
-                        'announcement_id' => $announcement->id,
-                        'file_name' => $file->getClientOriginalName(),
-                        // 'file_path' => asset('storage/' . $path),
-                        'file_path' => $path, // buat prod
-                        'mime_type' => $file->getMimeType(),
-                        'file_size' => $file->getSize(),
-                    ]);
-                }
-            }
-        });
+        ReviseAnnouncement::run($announcement, $request->toInput(), $request->user());
 
         return redirect()->route('admin.announcements.index')
             ->with('success', 'Pengumuman berhasil diperbarui.');
     }
 
-    /**
-     * Remove the specified resource from storage.
-     */
-    public function destroy(Announcement $announcement)
+    public function destroy(Request $request, Announcement $announcement)
     {
-        foreach ($announcement->announcementFiles as $file) {
-            Storage::delete($file->file_path);
-            $file->delete();
-        }
-        $announcement->delete();
+        RetractAnnouncement::run($announcement, $request->user());
 
         return redirect()->route('admin.announcements.index')
             ->with('success', 'Pengumuman berhasil dihapus.');
     }
 
-    public function detail(Announcement $announcement)
+    public function detail(Request $request, Announcement $announcement)
     {
-        $announcement->load('announcementFiles', 'announcementCreator');
+        // Pengumuman yang tak terlihat oleh penanya dijawab 404, bukan 403:
+        // keberadaannya tidak dibocorkan ke tamu yang menebak id.
+        $detail = ReaderAnnouncementDetail::run($announcement, $request->user());
+        abort_if($detail === null, 404);
 
-        return Inertia::render('AnnouncementDetail', [
-            'announcement' => $announcement,
-        ]);
+        return Inertia::render('Announcement/ShowPage', ['announcement' => $detail]);
     }
 
-    public function markAsRead(Announcement $announcement)
+    /**
+     * fe-v2-design §4.7 — penanda baca bukan state domain dan tidak diaudit (preseden
+     * BR-NOT-04, `NotificationController::read`). Hanya yang terlihat boleh ditandai.
+     */
+    public function markAsRead(Request $request, Announcement $announcement)
     {
-        $user = auth()->user();
+        $user = $request->user();
+        abort_unless(VisibleAnnouncements::run($user)->whereKey($announcement->id)->exists(), 404);
 
-        $reader = AnnouncementUser::updateOrCreate(
-            [
-                'announcement_id' => $announcement->id,
-                'user_id' => $user->id,
-            ],
-            [
-                'updated_at' => now(),
-            ]
-        );
+        $announcement->announcementReader()->syncWithoutDetaching([$user->id]);
 
-        return response()->json([
-            'message' => 'Pengumuman berhasil ditandai sebagai dibaca.',
-            'data' => $reader,
-        ]);
+        return back();
     }
 }

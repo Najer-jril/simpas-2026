@@ -177,12 +177,28 @@ Untuk SIMPAS, **Opsi A sudah lebih dari cukup**. Opsi B bisa dipertimbangkan kal
 | Review            | `ReviewerAssigned`         | Reviewer                           | In-app + Email  |
 | Review            | `RevisionRequested`        | Lead Researcher                    | In-app + Email  |
 | Review            | `RevisionResolved`         | Lead Researcher                    | In-app          |
-| Monev             | `MonevStageOpened`         | Lead Researcher                    | In-app + Email  |
-| Monev             | `MonevEvaluationSubmitted` | LPPM Operator                      | In-app          |
-| Identity & Access | `UserRegistered`           | User baru                          | Email (welcome) |
+| Review            | `RecheckRequested`         | Peserta Putaran Pemeriksaan        | In-app + Email  |
+| Review            | `SubmissionReadyForDecision` | LPPM Operator                    | In-app          |
+| Monev             | `MonevStageOpened`         | Lead Researcher + reviewer siklus itu | In-app + Email |
+| Monev             | `MonevEvaluationSubmitted` | Lead Researcher + LPPM Operator    | In-app          |
+| Identity & Access | `UserRegistered`           | User baru (welcome) + Operator pemegang `users.verify` | Email + In-app |
 | Identity & Access | `UserVerified`             | User                               | In-app + Email  |
+| Identity & Access | `UserVerificationRejected` | User — beserta alasannya (BR-IAM-13) | In-app + Email |
+| Identity & Access | `UserDeactivated`          | User                               | In-app + Email  |
 | Identity & Access | `ReviewerAppointed`        | Reviewer                           | In-app + Email  |
-| Reporting         | `ExportFailed`             | User                               | In-app          |
+| Form Engine       | `FormChanged`              | Pemilik draft berjalan — **kalau Admin memilih mengirim** (BR-FE-13) | In-app + Email |
+| Form Engine       | `PhaseOverrideGranted`     | Lead Researcher — tanpa alasannya (BR-FE-16) | In-app + Email |
+| Scheme            | `SubmissionDeadlineExtended` | Pemilik draft di periode itu     | In-app + Email  |
+| Reporting         | `ExportCompleted`          | Operator peminta saja (BR-RPT-07)  | In-app          |
+| Reporting         | `ExportFailed`             | Operator peminta saja (BR-RPT-08)  | In-app          |
+
+> **Penerima adalah pihak yang harus bertindak, bukan pihak yang disebut.**
+> Tiga baris di tabel ini semula menyebut satu penerima padahal aturannya
+> menuntut dua, dan selisihnya baru ketahuan saat M3 dan M4 diimplementasikan —
+> jejaknya di [register #36](../../bdd/open-questions.md). `MonevStageOpened`
+> paling telanjang: activity diagram di `02_monev.md` sudah menggambar panah ke
+> **peneliti dan reviewer** sejak awal, sementara tabel ini hanya menyebut
+> peneliti.
 
 ---
 
@@ -195,3 +211,4 @@ Untuk SIMPAS, **Opsi A sudah lebih dari cukup**. Opsi B bisa dipertimbangkan kal
 | BR-NOT-03 | Notification bersifat fire-and-forget — gagal kirim tidak menghentikan proses bisnis                                         |
 | BR-NOT-04 | `read_at` di-set saat user klik notifikasi — bukan saat halaman dibuka                                                       |
 | BR-NOT-05 | Unread count di navbar di-cache per user, invalidate saat ada notifikasi baru masuk                                          |
+| BR-NOT-06 | Channel per tipe event (`in-app`, `email`, atau keduanya) adalah **konfigurasi, bukan konstanta kode** — mengikuti preseden `scheme.rules` JSONB (BR-SCH-06): di-seed dengan default masuk akal, disunting Admin tanpa deploy. Aturannya satu: **setiap tipe event wajib punya deklarasi channel; event tanpa deklarasi ditolak saat dipublish**. Daftar isinya bukan aturan, jadi tidak dibekukan di DDD |

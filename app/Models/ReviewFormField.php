@@ -5,17 +5,32 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use LogicException;
 
 /**
+ * @property int $id
+ * @property int $review_evaluation_form_version_id
+ * @property int $field_type_id
  * @property bool $is_required
  * @property string $label
- * @property array|null $validation_rules
+ * @property string|null $description
+ * @property int $order
+ * @property array<string, scalar|null>|null $validation_rules
  * @property-read FieldType|null $fieldType
+ * @property-read int|null $review_form_field_responses_count
  */
 class ReviewFormField extends Model
 {
+    // BR-REV-18 — field milik versi yang terbit; versi baru menyalin baris, tidak menyunting.
+    protected static function booted(): void
+    {
+        static::updating(function (): void {
+            throw new LogicException('Isian versi formulir evaluasi yang terbit tidak dapat diubah.');
+        });
+    }
+
     protected $fillable = [
-        'review_evaluation_form_id',
+        'review_evaluation_form_version_id',
         'field_type_id',
         'label',
         'description',
@@ -30,11 +45,11 @@ class ReviewFormField extends Model
     ];
 
     /**
-     * @return BelongsTo<ReviewEvaluationForm, $this>
+     * @return BelongsTo<ReviewEvaluationFormVersion, $this>
      */
-    public function reviewEvaluationForm(): BelongsTo
+    public function reviewEvaluationFormVersion(): BelongsTo
     {
-        return $this->belongsTo(ReviewEvaluationForm::class);
+        return $this->belongsTo(ReviewEvaluationFormVersion::class);
     }
 
     /**
@@ -91,24 +106,5 @@ class ReviewFormField extends Model
     public function hasValidationRules(): bool
     {
         return !empty($this->validation_rules);
-    }
-
-    // Get validation rules as string for frontend
-    public function getValidationRulesStringAttribute(): string
-    {
-        if (empty($this->validation_rules)) {
-            return '';
-        }
-
-        $rules = [];
-        foreach ($this->validation_rules as $rule => $value) {
-            if (is_bool($value) && $value) {
-                $rules[] = $rule;
-            } elseif (!is_bool($value)) {
-                $rules[] = "$rule:$value";
-            }
-        }
-
-        return implode('|', $rules);
     }
 }

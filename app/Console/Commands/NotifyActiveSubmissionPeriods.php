@@ -2,12 +2,16 @@
 
 namespace App\Console\Commands;
 
-use App\Models\SubmissionDate;
 use App\Models\SubmissionPeriod;
-use App\Services\EmailNotificationService;
+use App\Models\User;
+use App\Notifications\SubmissionPeriodActiveNotification;
+use App\Queries\Period\PeriodsOpeningToday;
+use App\Support\Notification\Deliver;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class NotifyActiveSubmissionPeriods extends Command
 {
@@ -15,50 +19,17 @@ class NotifyActiveSubmissionPeriods extends Command
 
     protected $description = 'Notify users about newly active submission periods';
 
-    protected $emailService;
-
-    public function __construct(EmailNotificationService $emailService)
+    public function handle(): int
     {
-        parent::__construct();
-        $this->emailService = $emailService;
-    }
-
-    public function handle()
-    {
-        $now = Carbon::now();
-
-        $submissionPeriods = SubmissionPeriod::with('submissionDates')
-            ->get()
-            ->filter(function ($period) use ($now) {
-                $dates = $period->submissionDates->sortBy('datetime');
-
-                if ($dates->isEmpty()) {
-                    return false;
-                }
-
-                /** @var SubmissionDate $firstDate */
-                $firstDate = $dates->first();
-
-                /** @var SubmissionDate $lastDate */
-                $lastDate = $dates->last();
-
-                $startDate = Carbon::parse($firstDate->datetime);
-                $endDate = Carbon::parse($lastDate->datetime);
-
-                // Check if period just became active (started today)
-                return $startDate->isToday() && $now->between($startDate, $endDate);
-            });
-
-        foreach ($submissionPeriods as $period) {
+        foreach (PeriodsOpeningToday::run(Carbon::now()) as $period) {
             $cacheKey = "submission_period_notified_{$period->id}";
 
             // Check if we already sent notification for this period
-            if (Cache::has($cacheKey)) {
+            // Period gagal (cari penerima atau kirim) tidak ditandai sudah
+            // diberitahukan, jadi run terjadwal berikutnya mencoba lagi.
+            if (Cache::has($cacheKey) || !$this->notify($period)) {
                 continue;
             }
-
-            // Send notification
-            $this->emailService->notifySubmissionPeriodActive($period);
 
             // Mark as notified (cache for 1 year to prevent re-sending)
             Cache::put($cacheKey, true, now()->addYear());
@@ -69,5 +40,52 @@ class NotifyActiveSubmissionPeriods extends Command
         $this->info('Done checking active submission periods.');
 
         return 0;
+    }
+
+    private function notify(SubmissionPeriod $period): bool
+    {
+        // BR-NOT-03 — fire-and-forget: satu period gagal (query penerima
+        // atau pengiriman) tidak menghentikan loop, agar period lain yang
+        // sudah waktunya tetap ter-notify di run yang sama.
+        $users = collect();
+
+        try {
+            $users = $this->recipients();
+
+            $terkirim = Deliver::to($users, new SubmissionPeriodActiveNotification($period), [
+                'submission_period_id' => $period->id,
+                'recipients_count' => $users->count(),
+            ]);
+
+            // Period gagal kirim tidak ditandai sudah diberitahukan, agar
+            // run terjadwal berikutnya mencobanya lagi. Fire-and-forget:
+            // gagal tidak melempar, bukan dianggap berhasil.
+            if (!$terkirim) {
+                return false;
+            }
+        } catch (\Throwable $e) {
+            // Di sini hanya kegagalan **mencari penerima**; kegagalan
+            // kirim sudah ditelan Deliver (BR-NOT-03) beserta konteksnya,
+            // jadi menangkapnya lagi mencatat kejadian dua kali.
+            Log::error('Gagal menyiapkan notifikasi submission period active', [
+                'submission_period_id' => $period->id,
+                'recipients_count' => $users->count(),
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /** @return Collection<int, User> */
+    private function recipients(): Collection
+    {
+        // Recipients: semua user non-admin — perilaku yang sama dengan
+        // service email lama yang digantikan command ini.
+        return User::whereDoesntHave('roles', function ($query) {
+            $query->whereIn('name', ['Super Admin', 'Admin']);
+        })->get();
     }
 }

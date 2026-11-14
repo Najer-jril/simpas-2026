@@ -2,174 +2,184 @@
 
 namespace App\Models;
 
+use App\Enums\DeadlineType;
+use App\Support\Lifecycle\ReferenceGuard;
+use App\Support\SubmissionPeriodGate;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Query\Builder as QueryBuilder;
+use LogicException;
 
 /**
  * @property int $id
  * @property int $form_phase_id
+ * @property int $form_phase_version_id
  * @property int $form_access_control_id
  * @property int $phase_type_id
  * @property int $order
  * @property bool $needs_review
- * @property int $submission_date_id
- * @property int $reviewEvaluationFormsCount
- * @property int $requiredReviewEvaluationFormsCount
+ * @property DeadlineType $deadline_type BR-FE-07 — `submit` atau `output`
+ * @property int|null $deadline_cycle BR-FE-07 — null = pengajuan/luaran, n = laporan Monev n
+ * @property int $submission_count hanya setelah PhaseEdit
+ * @property int $assignment_count hanya setelah PhaseEdit
+ * @property int $evaluation_form_count hanya setelah PhaseEdit
  * @property-read FormPhase|null $formPhase
- * @property-read SubmissionDate $submissionDate
+ * @property-read FormPhaseVersion $formPhaseVersion
+ * @property-read FormAccessControl|null $formAccessControl
+ * @property-read PhaseType|null $phaseType
  */
 class FormPhaseDetail extends Model
 {
     use HasFactory;
 
+    /**
+     * BR-FE-20 — detail yang dirujuk pengajuan tidak bisa dihapus. BR-FE-22 — begitu pula detail
+     * yang form evaluasinya pernah ditugaskan: tanpa penjaga ini form evaluasinya ikut ter-cascade.
+     * BR-FE-32 — langkah milik versi terbit, jadi tidak pernah diubah; perubahan = versi baru.
+     */
+    protected static function booted(): void
+    {
+        static::updating(function (): void {
+            throw new LogicException('Langkah versi struktur yang terbit tidak dapat diubah.');
+        });
+
+        static::deleting(function (FormPhaseDetail $detail): void {
+            ReferenceGuard::assertUnreferenced('Detail tahap', [
+                'pengajuan' => FormSubmission::query()
+                    ->where('form_phase_detail_id', $detail->id)
+                    ->count(),
+                'penugasan formulir evaluasi' => ReviewerFormAssignment::query()
+                    ->whereHas('submissionReviewer.formSubmission', fn (Builder $q) => $q->where('form_phase_detail_id', $detail->id))
+                    ->count(),
+            ]);
+        });
+    }
+
     protected $fillable = [
         'form_phase_id',
+        'form_phase_version_id',
         'form_access_control_id',
         'phase_type_id',
         'order',
         'needs_review',
-        'submission_date_id',
-    ];
-
-    protected $appends = [
-        'review_evaluation_forms_count',
-        'required_review_evaluation_forms_count',
+        'deadline_type',
+        'deadline_cycle',
     ];
 
     protected $casts = [
         'needs_review' => 'boolean',
+        'deadline_type' => DeadlineType::class,
+        'deadline_cycle' => 'integer',
     ];
 
-    /**
-     * Get the form phase that owns the detail.
-     *
-     * @return BelongsTo<FormPhase, $this>
-     */
+    /** @return BelongsTo<FormPhase, $this> */
     public function formPhase(): BelongsTo
     {
         return $this->belongsTo(FormPhase::class);
     }
 
-    /**
-     * Get the form access control for the detail.
-     *
-     * @return BelongsTo<FormAccessControl, $this>
-     */
+    /** @return BelongsTo<FormAccessControl, $this> */
     public function formAccessControl(): BelongsTo
     {
         return $this->belongsTo(FormAccessControl::class);
     }
 
-    /**
-     * Get the submission date for the detail.
-     *
-     * @return BelongsTo<SubmissionDate, $this>
-     */
-    public function submissionDate(): BelongsTo
-    {
-        return $this->belongsTo(SubmissionDate::class);
-    }
-
-    /**
-     * Get the phase type for the detail.
-     *
-     * @return BelongsTo<PhaseType, $this>
-     */
+    /** @return BelongsTo<PhaseType, $this> */
     public function phaseType(): BelongsTo
     {
         return $this->belongsTo(PhaseType::class);
     }
 
-    /**
-     * Get the review evaluation forms for this form phase detail.
-     *
-     * @return HasMany<ReviewEvaluationForm, $this>
-     */
-    // NEW: Review evaluation forms relationship
-    public function reviewEvaluationForms(): HasMany
+    /** @return BelongsTo<FormPhaseVersion, $this> */
+    public function formPhaseVersion(): BelongsTo
     {
-        return $this->hasMany(ReviewEvaluationForm::class);
+        return $this->belongsTo(FormPhaseVersion::class);
     }
 
-    // NEW: Active review evaluation forms
-    /**
-     * @return HasMany<ReviewEvaluationForm, $this>
-     */
-    public function activeReviewEvaluationForms(): HasMany
+    /** @return HasMany<StepEvaluationForm, $this> Formulir Evaluasi pustaka yang terpasang di langkah ini */
+    public function stepEvaluationForms(): HasMany
     {
-        return $this->reviewEvaluationForms()->active()->ordered();
+        return $this->hasMany(StepEvaluationForm::class);
     }
 
-    // NEW: Required review evaluation forms
-    /**
-     * @return HasMany<ReviewEvaluationForm, $this>
-     */
-    public function requiredReviewEvaluationForms(): HasMany
+    /** @return HasMany<StepEvaluationForm, $this> */
+    public function activeStepEvaluationForms(): HasMany
     {
-        return $this->reviewEvaluationForms()->required()->active()->ordered();
+        return $this->stepEvaluationForms()->active()->ordered();
     }
 
-    // NEW: Optional review evaluation forms
-    /**
-     * @return HasMany<ReviewEvaluationForm, $this>
-     */
-    public function optionalReviewEvaluationForms(): HasMany
+    /** @return HasMany<StepEvaluationForm, $this> */
+    public function requiredStepEvaluationForms(): HasMany
     {
-        return $this->reviewEvaluationForms()
-            ->where('is_required', false)
-            ->active()
-            ->ordered();
+        return $this->activeStepEvaluationForms()->required();
     }
 
-    // NEW: Check if phase has review evaluation forms
     public function hasReviewEvaluationForms(): bool
     {
-        return $this->activeReviewEvaluationForms()->exists();
-    }
-
-    // NEW: Get count of review evaluation forms
-    public function getReviewEvaluationFormsCountAttribute(): int
-    {
-        return $this->activeReviewEvaluationForms()->count();
-    }
-
-    // NEW: Get count of required review evaluation forms
-    public function getRequiredReviewEvaluationFormsCountAttribute(): int
-    {
-        return $this->requiredReviewEvaluationForms()->count();
-    }
-
-    // Check if any form phase details need review
-    public function needsReview(): bool
-    {
-        return static::query()
-            ->where('form_phase_id', $this->form_phase_id)
-            ->where('needs_review', true)
-            ->exists();
-    }
-
-    // NEW: Check if phase requires evaluation forms to be completed before discussion
-    public function requiresEvaluationCompletion(): bool
-    {
-        return $this->hasReviewEvaluationForms() && $this->needsReview();
+        return $this->activeStepEvaluationForms()->exists();
     }
 
     /**
-     * Scope a query to order by the order column.
+     * BR-MON-01 — pintu pengajuan baru hanya langkah `submit` tanpa siklus (BR-FE-07). Laporan
+     * monev (bersiklus) dan Upload Luaran (`output`) lahir dari pengajuan APPROVED.
      */
-    public function isWithinDeadline(): bool
+    public function opensSubmission(): bool
     {
-        $period = $this->formPhase->submissionPeriod;
-        if ($period->is_force_closed) {
+        return $this->deadline_type === DeadlineType::Submit && $this->deadline_cycle === null;
+    }
+
+    /** BR-FE-25 — nama tanggal yang dibaca langkah ini di kalender periode, mis. "Batas Laporan Monev I". */
+    public function deadlineLabel(): string
+    {
+        return $this->deadline_type->label($this->deadline_cycle);
+    }
+
+    /**
+     * BR-FE-17, BR-FE-26 — jendela kerja satu aktor langkah ini di kalender `$period` (periode
+     * pengajuan). Tanggal kerja yang belum diatur menutup; Batas Evaluasi yang belum diatur
+     * berarti tak bertenggat.
+     */
+    public function isWithinDeadline(SubmissionPeriod $period, DeadlineType $type = DeadlineType::Submit): bool
+    {
+        // BR-SCH-07 — force close mengalahkan tanggal — sumbu yang berbeda.
+        if (SubmissionPeriodGate::isForceClosed($period, $this)) {
             return false;
         }
 
-        return now()->lte($this->submissionDate->datetime);
+        $date = $period->deadlineFor($this, $type);
+
+        if ($date === null) {
+            return $type === DeadlineType::Evaluation;
+        }
+
+        return now()->lte($date->datetime);
     }
 
-    public function scopeOrdered($query)
+    /**
+     * BR-FE-32 — hanya langkah versi terbaru tahapnya (yang disunting editor dan dipakai angkatan
+     * yang belum terpaku). Berkorelasi per baris, jadi aman untuk banyak tahap sekaligus.
+     *
+     * @param  Builder<FormPhaseDetail>  $query
+     * @return Builder<FormPhaseDetail>
+     */
+    public function scopeInLatestVersion(Builder $query): Builder
+    {
+        return $query->where('form_phase_details.form_phase_version_id', fn (QueryBuilder $latest) => $latest
+            ->select('v.id')
+            ->from('form_phase_versions as v')
+            ->whereColumn('v.form_phase_id', 'form_phase_details.form_phase_id')
+            ->orderByDesc('v.number')
+            ->limit(1));
+    }
+
+    /**
+     * @param  Builder<FormPhaseDetail>  $query
+     * @return Builder<FormPhaseDetail>
+     */
+    public function scopeOrdered(Builder $query): Builder
     {
         return $query->orderBy('order');
     }

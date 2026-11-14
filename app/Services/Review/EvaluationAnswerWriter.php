@@ -1,0 +1,72 @@
+<?php
+
+namespace App\Services\Review;
+
+use App\Data\Request\EvaluationAnswersInput;
+use App\Models\ReviewFormField;
+use App\Models\ReviewFormResponse;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Validation\ValidationException;
+
+/**
+ * Jawaban reviewer ke draft evaluasinya. Dipanggil dari dalam transaksi SaveEvaluationDraft
+ * dan SubmitEvaluationAnswers, yang menulis jejak auditnya.
+ */
+final class EvaluationAnswerWriter
+{
+    /**
+     * @throws ValidationException
+     */
+    public static function write(ReviewFormResponse $response, EvaluationAnswersInput $input): void
+    {
+        // BR-FE-05 — evaluasi yang sudah disubmit, atau dikunci tenggatnya, tidak bisa disunting.
+        if (!$response->canBeEdited()) {
+            throw ValidationException::withMessages(['error' => 'Formulir ini tidak dapat diubah lagi.']);
+        }
+
+        self::assertOwnFields($response, $input);
+
+        foreach ($input->answers as $fieldId => $value) {
+            $response->saveFieldResponse($fieldId, $value);
+        }
+
+        $response->update(['final_notes' => $input->finalNotes]);
+    }
+
+    /**
+     * Jawaban untuk field form lain dulu tersimpan diam-diam di draft ini dan ikut
+     * menaikkan persentase kelengkapannya.
+     *
+     * @throws ValidationException
+     */
+    private static function assertOwnFields(ReviewFormResponse $response, EvaluationAnswersInput $input): void
+    {
+        $fieldIds = array_keys($input->answers);
+        // BR-REV-18 — hanya field versi yang diisi jawaban ini.
+        $owned = $response->reviewEvaluationFormVersion
+            ->reviewFormFields()
+            ->whereIn('id', $fieldIds)
+            ->count();
+
+        if ($owned === count($fieldIds)) {
+            return;
+        }
+
+        // B10 — layar yang dimuat sebelum Apply masih mengirim field versi lama Formulir Evaluasi yang sama.
+        $otherVersion = ReviewFormField::query()
+            ->whereIn('id', $fieldIds)
+            ->whereHas('reviewEvaluationFormVersion', fn (Builder $version) => $version
+                ->where('review_evaluation_form_id', $response->reviewEvaluationFormVersion->review_evaluation_form_id))
+            ->exists();
+
+        if ($otherVersion) {
+            throw ValidationException::withMessages([
+                'responses' => 'Formulir evaluasi ini sudah diganti ke versi baru. Muat ulang halaman lalu isi ulang penilaian Anda.',
+            ]);
+        }
+
+        throw ValidationException::withMessages([
+            'responses' => 'Jawaban memuat isian yang bukan milik formulir evaluasi ini.',
+        ]);
+    }
+}

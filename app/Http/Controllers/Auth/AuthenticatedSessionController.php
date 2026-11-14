@@ -2,8 +2,11 @@
 
 namespace App\Http\Controllers\Auth;
 
+use App\Enums\SessionEndReason;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Queries\Announcement\PublicAnnouncementPanel;
+use App\Queries\Identity\PostLoginDestination;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -16,11 +19,15 @@ class AuthenticatedSessionController extends Controller
     /**
      * Display the login view.
      */
-    public function create(): Response
+    public function create(Request $request): Response
     {
         return Inertia::render('Auth/LoginPage', [
             'canResetPassword' => Route::has('password.request'),
             'status' => session('status'),
+            // W170 — tab yang menerima `sessions.ended` mendarat di sini dengan ?sesi=<alasan>.
+            'notice' => SessionEndReason::tryFrom($request->string('sesi')->toString())?->notice(),
+            // W6 — panel pengumuman publik di samping form login (fe-v2-design §4.7).
+            'announcements' => PublicAnnouncementPanel::run(),
         ]);
     }
 
@@ -33,19 +40,13 @@ class AuthenticatedSessionController extends Controller
 
         $request->session()->regenerate();
 
-        $user = Auth::user();
+        $user = $request->user();
 
-        // Saat testing, pakai route default Laravel
-        if (app()->environment('testing')) {
-            return redirect()->intended(route('dashboard', absolute: false));
+        if ($user === null) {
+            return redirect()->route('login');
         }
 
-        // Production app logic
-        if ($user->can('users.manage')) {
-            return redirect()->intended(route('admin.dashboard'));
-        }
-
-        return redirect()->intended(route('user.dashboard'));
+        return redirect()->intended(route(PostLoginDestination::run($user)));
     }
 
     /**

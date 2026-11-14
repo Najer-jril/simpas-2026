@@ -2,15 +2,19 @@
 
 namespace App\Models;
 
+use Database\Seeders\PermissionSeeder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Spatie\Permission\Models\Role;
 
 /**
  * @property-read User|null $announcementCreator
  * @property-read Collection<int, AnnouncementFile> $announcementFiles
+ * @property-read Collection<int, Role> $targetRoles
  */
 class Announcement extends Model
 {
@@ -44,9 +48,46 @@ class Announcement extends Model
         return $this->hasMany(AnnouncementFile::class);
     }
 
-    public function announcementReader()
+    /**
+     * Penanda baca (`announcement_users`), bukan state domain.
+     *
+     * @return BelongsToMany<User, $this>
+     */
+    public function announcementReader(): BelongsToMany
     {
-        return $this->belongsToMany(User::class, 'announcement_user')
+        return $this->belongsToMany(User::class, 'announcement_users')
             ->withTimestamps();
+    }
+
+    /**
+     * fe-v2-design §4.7 — kosong berarti semua pengguna login.
+     *
+     * @return BelongsToMany<Role, $this>
+     */
+    public function targetRoles(): BelongsToMany
+    {
+        return $this->belongsToMany(Role::class, 'announcement_roles');
+    }
+
+    /** @return list<string> */
+    public function targetRoleNames(): array
+    {
+        return array_values($this->targetRoles->map(static fn (Role $role): string => $role->name)->all());
+    }
+
+    /**
+     * Menulis lewat Model, bukan Support: Support dilarang menulis state (SupportPurityTest).
+     *
+     * @param  list<string>  $roleNames
+     */
+    public function syncTargetRoles(array $roleNames): void
+    {
+        $roleIds = Role::query()
+            ->where('guard_name', PermissionSeeder::GUARD)
+            ->whereIn('name', $roleNames)
+            ->pluck('id')
+            ->all();
+
+        $this->targetRoles()->sync($roleIds);
     }
 }

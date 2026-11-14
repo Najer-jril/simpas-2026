@@ -1,0 +1,200 @@
+<?php
+
+namespace App\Queries\Monev;
+
+use App\Actions\Concerns\ChangesNoState;
+use App\Data\View\Monev\MonevCycleData;
+use App\Enums\DeadlineType;
+use App\Enums\MonevCycleState;
+use App\Models\FormPhaseDetail;
+use App\Models\FormSubmission;
+use App\Queries\Submission\FirstSubmitAt;
+use App\States\Submission\Approved;
+use App\States\Submission\Withdrawn;
+use App\Support\PhaseAccessGate;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Query\Builder as QueryBuilder;
+use Lorisleiva\Actions\Concerns\AsAction;
+
+/**
+ * W125 — satu definisi siklus monev milik sebuah induk, dipakai gerbang (`MonevAccessGate`),
+ * layar monev, dan Action penegaknya. Keadaannya turunan BR-MON-01/02/05/08, bukan kolom.
+ *
+ * @method static list<MonevCycleData> run(FormSubmission $parent)
+ */
+class MonevCycles implements ChangesNoState
+{
+    use AsAction;
+
+    /** Ditulis `SubmitMonevReport`, dibaca di sini lewat `FirstSubmitAt`: satu sumber. */
+    public const REPORT_SUBMITTED_AUDIT = 'Laporan monev disubmit';
+
+    /**
+     * Detail versi struktur induk (BR-FE-32) ber-`order` lebih besar. BR-FE-28: Form pengajuan selalu `order = 1`, jadi
+     * baris Pengajuan aturan akses lain tak ikut; W92 (Form lain berbagi tahap) kini ditolak Action.
+     *
+     * @return Collection<int, FormPhaseDetail>
+     */
+    public static function details(FormSubmission $parent): Collection
+    {
+        $own = $parent->formPhaseDetail;
+
+        if ($own === null) {
+            return new Collection;
+        }
+
+        return FormPhaseDetail::query()
+            ->where('form_phase_version_id', $own->form_phase_version_id)
+            ->where('order', '>', $own->order)
+            // W139 — langkah Upload Luaran (BR-FE-07: `output`) milik luaran, bukan siklus monev.
+            ->where('deadline_type', '!=', DeadlineType::Output->value)
+            ->with(['phaseType', 'formAccessControl'])
+            ->ordered()
+            ->get();
+    }
+
+    /**
+     * Padanan SQL `details()`: induk yang punya ≥ 1 siklus, supaya papan Operator bisa
+     * dipaginasi di server tanpa menghitung siklus semua baris.
+     *
+     * @param  Builder<FormSubmission>  $parents
+     * @return Builder<FormSubmission>
+     */
+    public static function whereHasCycles(Builder $parents): Builder
+    {
+        return $parents->whereHas('formPhaseDetail', fn (Builder $own) => $own->whereExists(
+            fn (QueryBuilder $later) => $later->from('form_phase_details as later')
+                ->whereColumn('later.form_phase_version_id', 'form_phase_details.form_phase_version_id')
+                ->whereColumn('later.order', '>', 'form_phase_details.order')
+                ->where('later.deadline_type', '!=', DeadlineType::Output->value)
+        ));
+    }
+
+    /** W125 — siklus langkah (BR-FE-07), lalu nama tipe tahap, lalu urutannya. */
+    public static function nameOf(FormPhaseDetail $detail): string
+    {
+        $cycle = $detail->deadline_cycle;
+
+        if ($cycle !== null) {
+            return DeadlineType::cycleName($cycle);
+        }
+
+        return $detail->phaseType->name ?? "Tahap {$detail->order}";
+    }
+
+    /** W153 — siklus berjalan = siklus pertama yang belum Done; null bila semuanya selesai. */
+    public static function current(FormSubmission $parent): ?MonevCycleData
+    {
+        return collect(self::run($parent))
+            ->first(fn (MonevCycleData $cycle): bool => $cycle->state !== MonevCycleState::Done);
+    }
+
+    /** @return list<MonevCycleData> */
+    public function handle(FormSubmission $parent): array
+    {
+        $reports = FormSubmission::query()
+            ->where('parent_submission_id', $parent->id)
+            ->addSelect(['form_submissions.*', 'first_submitted_at' => FirstSubmitAt::subquery(self::REPORT_SUBMITTED_AUDIT)])
+            ->get()
+            ->keyBy('form_phase_detail_id');
+
+        $cycles = [];
+        $previous = null;
+
+        foreach (self::details($parent) as $detail) {
+            $previous = $this->cycle($parent, $detail, $reports->get($detail->id), $previous);
+            $cycles[] = $previous;
+        }
+
+        return $cycles;
+    }
+
+    private function cycle(
+        FormSubmission $parent,
+        FormPhaseDetail $detail,
+        ?FormSubmission $report,
+        ?MonevCycleData $previous,
+    ): MonevCycleData {
+        $name = self::nameOf($detail);
+        [$state, $reason] = $this->stateOf($parent, $detail, $report, $previous);
+        $submittedAt = $report?->getAttribute('first_submitted_at');
+
+        return new MonevCycleData(
+            detailId: $detail->id,
+            name: $name,
+            order: $detail->order,
+            needsReview: $detail->needs_review,
+            // BR-FE-26, BR-MON-05 — tanggal siklus di kalender periode induk; null = belum diatur.
+            deadline: $parent->submissionPeriod?->deadlineFor($detail, DeadlineType::Submit)?->datetime->toIso8601String(),
+            state: $state,
+            blockedReason: $reason,
+            reportId: $report?->id,
+            submittedAt: is_string($submittedAt) ? CarbonImmutable::parse($submittedAt)->toIso8601String() : null,
+            openedAt: $report?->cycle_opened_at?->toIso8601String(),
+        );
+    }
+
+    /**
+     * Diperiksa berurutan; yang pertama cocok menang. Laporan terkirim tetap terbaca
+     * meski induknya ditarik (MON-CYCLE-11), jadi diperiksa sebelum pembekuan.
+     *
+     * @return array{0: MonevCycleState, 1: string|null}
+     */
+    private function stateOf(
+        FormSubmission $parent,
+        FormPhaseDetail $detail,
+        ?FormSubmission $report,
+        ?MonevCycleData $previous,
+    ): array {
+        $name = self::nameOf($detail);
+
+        if ($report?->is_submitted === true) {
+            return [$report->canProceed() ? MonevCycleState::Done : MonevCycleState::Submitted, null];
+        }
+
+        // BR-MON-08 — pembekuan mengalahkan segalanya.
+        if ($parent->status instanceof Withdrawn) {
+            return [MonevCycleState::Frozen, 'Pengajuan ini sudah ditarik. Siklus monevnya dibekukan dan tidak menerima laporan baru.'];
+        }
+
+        // BR-MON-01, BR-MON-02 — induk disetujui dan siklus sebelumnya tuntas.
+        $locked = $this->lockedReason($parent, $previous, $name);
+
+        if ($locked !== null) {
+            return [MonevCycleState::Locked, $locked];
+        }
+
+        return $this->windowState($parent, $detail, $report, $name);
+    }
+
+    /** @return array{0: MonevCycleState, 1: string|null} BR-MON-05/BR-FE-08 — kalender periode induk (BR-FE-26), atau override laporan */
+    private function windowState(FormSubmission $parent, FormPhaseDetail $detail, ?FormSubmission $report, string $name): array
+    {
+        $period = $parent->submissionPeriod;
+        $open = $report === null ? $period !== null && $detail->isWithinDeadline($period) : PhaseAccessGate::isOpenFor($report, $detail);
+
+        if ($open) {
+            return [MonevCycleState::Open, null];
+        }
+
+        // BR-FE-26 — tanggal yang belum diatur menutup siklus, dengan alasan yang berbeda.
+        return $period?->deadlineFor($detail, DeadlineType::Submit) === null
+            ? [MonevCycleState::Closed, "Jadwal {$name} belum diatur di periode ini. Hubungi Operator LPPM."]
+            : [MonevCycleState::Closed, "Batas waktu {$name} sudah lewat. Hubungi Operator LPPM bila membutuhkan perpanjangan."];
+    }
+
+    private function lockedReason(FormSubmission $parent, ?MonevCycleData $previous, string $name): ?string
+    {
+        if (!$parent->status instanceof Approved) {
+            return 'Siklus monev terbuka setelah pengajuan disetujui.';
+        }
+
+        if ($previous !== null && $previous->state !== MonevCycleState::Done) {
+            return "Selesaikan Laporan {$previous->name} lebih dulu sebelum mengisi {$name}.";
+        }
+
+        return null;
+    }
+}

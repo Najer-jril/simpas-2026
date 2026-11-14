@@ -94,14 +94,14 @@ const selectorsBar = computed(() =>
             />
 
             <VisBarComponent
-                :x="(d: Data, i: number) => i"
+                :x="(_d: Data, i: number) => i"
                 :y="categories.map((category) => (d: Data) => d[category])"
                 :color="colors"
                 :rounded-corners="roundedCorners"
                 :bar-padding="0.05"
                 :attributes="{
                     [selectorsBar]: {
-                        opacity: (d: Data, i: number) => {
+                        opacity: (_d: Data, i: number) => {
                             const pos = i % categories.length
                             return legendItems[pos]?.inactive ? filterOpacity : 1
                         },
@@ -113,6 +113,7 @@ const selectorsBar = computed(() =>
                 v-if="showXAxis"
                 type="x"
                 :tick-format="xFormatter ?? ((v: number) => data[v]?.[index])"
+                :tick-values="data.map((_, i) => i)"
                 :grid-line="false"
                 :tick-line="false"
                 tick-text-color="hsl(var(--vis-text-color))"

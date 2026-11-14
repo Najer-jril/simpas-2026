@@ -11,19 +11,23 @@
     "require": {
         "php": "^8.4",
         "barryvdh/laravel-dompdf": "^3.1",
+        "ezyang/htmlpurifier": "^4.19",
         "inertiajs/inertia-laravel": "^3.0",
         "laravel/framework": "^13.0",
+        "laravel/reverb": "^1.12",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^3.0",
         "lorisleiva/laravel-actions": "^2.10",
         "maatwebsite/excel": "^3.1",
         "predis/predis": "^3.4",
         "spatie/laravel-activitylog": "^4.12",
-        "spatie/laravel-model-states": "*",
+        "spatie/laravel-data": "^4.23",
+        "spatie/laravel-model-states": "^2.14",
         "spatie/laravel-permission": "7.4.1",
         "tightenco/ziggy": "^2.0"
     },
     "require-dev": {
+        "behat/gherkin": "^4.17",
         "fakerphp/faker": "^1.23",
         "larastan/larastan": "^3.9",
         "laravel/pail": "^1.2.2",
@@ -46,7 +50,10 @@
     "autoload-dev": {
         "psr-4": {
             "Tests\\": "tests/"
-        }
+        },
+        "files": [
+            "tests/Support/fixtures.php"
+        ]
     },
     "scripts": {
         "post-autoload-dump": [
@@ -66,14 +73,26 @@
         ],
         "dev": [
             "Composer\\Config::disableProcessTimeout",
-            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php artisan serve --host=0.0.0.0\" \"php artisan queue:listen --tries=1\" \"npm run dev\" --names=server,queue,vite"
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74,#86efac\" \"php artisan serve --host=0.0.0.0\" \"php artisan queue:listen --tries=1\" \"npm run dev\" \"php artisan reverb:start\" --names=server,queue,vite,reverb"
+        ],
+        "dev:docker": [
+            "Composer\\Config::disableProcessTimeout",
+            "npx concurrently -c \"#93c5fd,#fdba74\" \"php artisan serve --host=0.0.0.0 --no-reload\" \"npm run dev\" --names=server,vite"
         ],
         "test": [
             "@php artisan config:clear --ansi",
             "@php artisan test"
         ],
         "lint": "./vendor/bin/pint --test",
-        "lint:fix": "./vendor/bin/pint"
+        "lint:fix": "./vendor/bin/pint",
+        "analyse": "./vendor/bin/phpstan analyse --memory-limit=1G",
+        "analyse:strict": "./vendor/bin/phpstan analyse -c phpstan-strict.neon --memory-limit=1G",
+        "quality": [
+            "@lint",
+            "@analyse",
+            "@analyse:strict",
+            "./vendor/bin/pest"
+        ]
     },
     "extra": {
         "laravel": {

@@ -1,24 +1,40 @@
 # BC: Monev (Monitoring & Evaluation)
 
 **Klasifikasi:** 🟡 Supporting Domain  
-**Versi:** 2.3  
+**Versi:** 2.6  
 **Status:** Draft
+
+> **Perubahan v2.5 → v2.6** ([ADR 0019](../../../adr/0019-fase-template-jadwal-periode-form-evaluasi-berversi.md),
+> pemilik 2026-11-10). Tenggat setiap siklus dibaca dari **kalender periode pengajuan
+> induk** pada jenis + siklus langkahnya ([BR-FE-26](../generic/01_form_engine.md)), bukan
+> dari tanggal yang melekat di langkah. Fase yang sama boleh ditautkan ke periode baru
+> tanpa mengubah tanggal monev angkatan lama.
+
+> **Perubahan v2.3 → v2.4.** BR-MON-03 diperbaiki dari "satu **researcher**"
+> menjadi "satu **parent FormSubmission**" per FormPhaseDetail — bacaan lama
+> salah memblokir researcher yang punya dua proposal APPROVED sekaligus
+> (BR-SM-01 mengizinkan dua skema berbeda dalam satu period); index yang
+> sudah dikirim M0 (`one_child_submission_per_phase_detail`, per
+> `parent_submission_id`) sudah benar sejak awal, teks aturannya yang
+> menyusul.
 
 ---
 
 ## Responsibility
 
-Mengelola siklus monitoring dan evaluasi untuk Submission yang sudah APPROVED. Monev adalah bagian dari satu FormPhase yang sama dengan pengajuan — bukan phase terpisah. Reviewer untuk setiap siklus monev di-assign manual oleh Operator dengan suggestion dari reviewer pengajuan awal.
+Mengelola siklus monitoring dan evaluasi untuk Submission yang sudah APPROVED. Monev adalah bagian dari satu FormPhase yang sama dengan pengajuan — bukan phase terpisah: siklusnya adalah langkah sesudah langkah induk **di versi struktur langkah induk** (BR-FE-32), sehingga versi tahap yang terbit belakangan tidak mengubah siklus angkatan yang sudah berjalan. Reviewer untuk setiap siklus monev di-assign manual oleh Operator dengan suggestion dari reviewer pengajuan awal.
 
 ---
 
 ## Konsep Kunci: Satu FormPhase, Satu Lifecycle
 
 ```
-FormPhase: "Penelitian DIPA 2025"
-│
+FormPhase: "Penelitian DIPA"            (template tanpa tanggal; dipakai banyak periode)
+│                                        deadline = jenis + siklus langkah, tanggalnya
+│                                        dibaca dari kalender periode pengajuan induk
 ├── Detail 1  order=1  Pengajuan          researcher    needs_review=true   deadline="Batas Submit"
-├── Detail 2  order=2  Evaluasi Pengajuan reviewer      ReviewEvaluationForm deadline="Batas Submit"
+│             ← saat status NEEDS_REVISION, detail ini dibuka lagi sampai "Batas Revisi"
+├── Detail 2  order=2  Evaluasi Pengajuan reviewer      ReviewEvaluationForm deadline="Batas Evaluasi"
 │             ← gate: tidak bisa lanjut sebelum semua ReviewSummary resolved
 │
 ├── Detail 3  order=3  Laporan Monev I    researcher    needs_review=true   deadline="Batas Monev I"
@@ -32,6 +48,18 @@ FormPhase: "Penelitian DIPA 2025"
 ```
 
 Semua FormSubmission dalam lifecycle ini terhubung via `parent_submission_id` ke submission pengajuan utama. Tidak ada ambiguitas "monev ini dari pengajuan yang mana."
+
+Tanggal di diagram adalah **nama tanggal di kalender periode**, bukan tanggal milik
+detail. Pengajuan 2025 membaca "Batas Monev II" periode 2025 — walaupun tanggal itu jatuh
+di 2026 dan fase yang sama sudah ditautkan ke periode 2026 dengan "Batas Monev II"-nya
+sendiri. Kalender periode yang tidak memuat tanggal sebuah siklus menutup siklus itu
+sampai Operator mengisinya ([BR-FE-26](../generic/01_form_engine.md)).
+
+Perhatikan Detail 1 dan Detail 2 memakai **tanggal yang berbeda**. Keduanya punya aktor
+berbeda — researcher dan reviewer — dan tahapannya berurutan, jadi memakai ulang
+`"Batas Submit"` akan membuat jendela kerja reviewer nol (BR-FE-17). Dengan alasan yang
+sama, revisi membuka kembali Detail 1 sampai `"Batas Revisi"`, bukan sampai batas submit
+yang sudah lewat.
 
 ---
 
@@ -111,13 +139,15 @@ flowchart TD
 | Kode      | Rule                                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------------------- |
 | BR-MON-01 | Monev hanya bisa diakses setelah FormSubmission pengajuan utama berstatus APPROVED                                  |
-| BR-MON-02 | Researcher tidak bisa mengisi Detail berikutnya sebelum `can_proceed = true` dari Detail sebelumnya                 |
-| BR-MON-03 | Satu researcher hanya bisa punya satu child FormSubmission per FormPhaseDetail                                      |
+| BR-MON-02 | Researcher tidak bisa mengisi Detail berikutnya sebelum Detail sebelumnya `canProceed()`. **`canProceed()` computed, bukan kolom** — sejajar `isArchived()` (BR-SM-13): ia bernilai true kalau detail itu sudah disubmit DAN, bila `needs_review = true`, evaluasinya selesai tanpa ReviewSummary `open`. Tidak ada yang "menyetel" gerbang ini; ia turunan dari keadaan |
+| BR-MON-03 | Satu parent FormSubmission hanya bisa punya satu child FormSubmission per FormPhaseDetail (per parent, bukan per researcher — satu researcher boleh punya lebih dari satu parent APPROVED sekaligus, lihat BR-SM-01) |
 | BR-MON-04 | Reviewer untuk setiap siklus monev di-assign manual oleh Operator                                                   |
-| BR-MON-05 | Setiap FormPhaseDetail monev punya hard deadline — lewat deadline, akses ditutup kecuali ada FormSubmissionOverride |
+| BR-MON-05 | **Penerapan [BR-FE-07](../generic/01_form_engine.md) + [BR-FE-08](../generic/01_form_engine.md) pada fase monev.** Setiap FormPhaseDetail monev punya hard deadline — lewat deadline, akses ditutup kecuali ada FormSubmissionOverride. Tidak ada mekanisme deadline kedua |
 | BR-MON-06 | Satu SubmissionReviewer baru dibuat per siklus — tidak reuse record dari siklus sebelumnya                          |
 | BR-MON-07 | Reviewer pengajuan awal yang sudah tidak aktif (expired `end_date`) tidak muncul di suggestion monev                |
 | BR-MON-08 | Submission yang WITHDRAWN saat monev sedang berjalan — siklus monev aktif di-freeze, tidak bisa submit laporan baru |
+| BR-MON-09 | Hasil evaluasi monev terlihat Researcher **begitu reviewer submit**, tidak menunggu siklus berakhir. Ini pengecualian eksplisit atas [BR-REV-12](../core/02_review.md), yang menahan skor sampai APPROVED/REJECTED. Alasannya monev bersifat formatif — koreksi arah kegiatan mustahil kalau catatannya baru terbaca setelah kegiatannya usai |
+| BR-MON-10 | Dua peristiwa siklus monev memberi tahu pihak yang harus bertindak. `MonevStageOpened` memberi tahu **peneliti** (laporannya ditunggu) dan **reviewer yang ditugaskan pada siklus itu** (penilaiannya ditunggu). `MonevEvaluationSubmitted` memberi tahu peneliti. Siklus yang belum dibuka tidak memberi tahu siapa pun — jadwal monev berjarak bulanan, dan tanpa pemberitahuan tenggatnya terlanjur berjalan sebelum ada yang membukanya |
 
 ---
 

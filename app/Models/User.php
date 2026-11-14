@@ -2,10 +2,12 @@
 
 namespace App\Models;
 
+use App\Support\Lifecycle\DeletionNotPermitted;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\HasOneThrough;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -13,7 +15,7 @@ use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;
 
 /**
- * @property bool $is_reviewer
+ * @property-read UserProfile|null $userProfile
  * @property-read Organization|null $organization
  * @property-read Reviewer|null $reviewer
  */
@@ -21,6 +23,32 @@ class User extends Authenticatable implements MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
     use HasFactory, HasRoles, Notifiable, SoftDeletes;
+
+    /**
+     * BR-IAM-19 — akun tidak pernah dihapus, hanya dinonaktifkan (BR-IAM-05).
+     * Dijaga di model: BR-IAM-10 menolak menonaktifkan lead researcher yang
+     * masih memegang pengajuan aktif — percuma kalau hapus tetap terbuka.
+     */
+    protected static function booted(): void
+    {
+        static::deleting(function (): never {
+            throw new DeletionNotPermitted(
+                'Akun tidak dapat dihapus, pengguna hanya dinonaktifkan (BR-IAM-19). '
+                .'Deaktivasi mencabut kemampuan bertindak tanpa menghilangkan pengajuan, '
+                .'profil, dan jejak yang menunjuk orang ini.'
+            );
+        });
+    }
+
+    /**
+     * BR-IAM-05 — sama dengan default kolom. Tanpanya model yang baru dibuat membawa
+     * `is_active = null` sampai di-refresh, dan EnsureAccountActive membacanya sebagai nonaktif.
+     *
+     * @var array<string, bool>
+     */
+    protected $attributes = [
+        'is_active' => true,
+    ];
 
     /**
      * The attributes that are mass assignable.
@@ -31,6 +59,7 @@ class User extends Authenticatable implements MustVerifyEmail
         'name',
         'email',
         'password',
+        'is_active',
     ];
 
     /**
@@ -53,11 +82,9 @@ class User extends Authenticatable implements MustVerifyEmail
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'is_active' => 'boolean',
         ];
     }
-
-    // App\Models\User.php
-    protected $appends = ['is_reviewer'];
 
     public function formSubmissions()
     {
@@ -75,11 +102,6 @@ class User extends Authenticatable implements MustVerifyEmail
         return $this->hasMany(Reviewer::class);
     }
 
-    public function getIsReviewerAttribute(): bool
-    {
-        return $this->reviewer()->exists();
-    }
-
     public function reviewer()
     {
         return $this->hasOne(Reviewer::class);
@@ -92,14 +114,16 @@ class User extends Authenticatable implements MustVerifyEmail
 
     public function announcementReads()
     {
-        return $this->belongsToMany(Announcement::class, 'announcement_user')
+        return $this->belongsToMany(Announcement::class, 'announcement_users')
             ->withTimestamps();
     }
 
     /**
      * Get the user's profile.
+     *
+     * @return HasOne<UserProfile, $this>
      */
-    public function userProfile()
+    public function userProfile(): HasOne
     {
         return $this->hasOne(UserProfile::class);
     }

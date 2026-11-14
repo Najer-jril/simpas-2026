@@ -1,15 +1,14 @@
 <?php
 
+use App\Enums\DeadlineType;
 use App\Models\Form;
 use App\Models\FormAccessControl;
 use App\Models\FormPhase;
-use App\Models\FormPhaseDetail;
 use App\Models\FormSubmission;
 use App\Models\FormSubmissionOverride;
 use App\Models\Organization;
 use App\Models\PhaseType;
 use App\Models\SubmissionDate;
-use App\Models\SubmissionDateLabel;
 use App\Models\SubmissionPeriod;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -50,7 +49,7 @@ it('revoke sets is_active to false', function () {
     ]);
 
     $phaseType = PhaseType::create(['name' => 'review']);
-    $formPhase = FormPhase::create(['title' => 'Phase 1']);
+    $formPhase = FormPhase::create(['title' => 'Tahap 1']);
     $organization = Organization::create([
         'name' => 'ITK',
         'type' => 'institution',
@@ -63,18 +62,16 @@ it('revoke sets is_active to false', function () {
         'organization_id' => $organization->id,
     ]);
     $period = SubmissionPeriod::create(['name' => 'Period 1']);
-    $label = SubmissionDateLabel::create(['name' => 'Default']);
     $submissionDate = new SubmissionDate;
     $submissionDate->forceFill([
-        'submission_date_label_id' => $label->id,
+        'type' => DeadlineType::Submit,
         'datetime' => now(),
         'submission_period_id' => $period->id,
     ])->save();
-    $formPhaseDetail = FormPhaseDetail::create([
-        'form_phase_id' => $formPhase->id,
+    $formPhaseDetail = phaseStep($formPhase, [
         'form_access_control_id' => $formAccessControl->id,
         'phase_type_id' => $phaseType->id,
-        'submission_date_id' => $submissionDate->id,
+        'deadline_type' => DeadlineType::Submit,
         'order' => 1,
     ]);
 

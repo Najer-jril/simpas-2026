@@ -4,8 +4,10 @@ namespace App\Models;
 
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * @property int $id
@@ -22,11 +24,25 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class Reviewer extends Model
 {
+    use HasFactory;
+
     protected $fillable = [
         'user_id',
         'reviewer_type',
         'start_date',
         'end_date',
+    ];
+
+    /**
+     * Tanpa cast ini, `start_date`/`end_date` kembali sebagai string meski
+     * PHPDoc menjanjikan CarbonInterface: pembanding tanggal (BR-REV-09) pecah
+     * setelah reload, bukan di memori — lolos unit test, gagal di jalur HTTP.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'start_date' => 'date',
+        'end_date' => 'date',
     ];
 
     /** @return BelongsTo<User, $this> */
@@ -35,7 +51,22 @@ class Reviewer extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function submissionReviewers()
+    /**
+     * BR-REV-09 — masa tugas inklusif per hari: end_date adalah hari terakhir
+     * bertugas, jam tidak ikut dihitung. Versi query: ReviewersWithinTenure.
+     */
+    public function isWithinTenure(?CarbonInterface $on = null): bool
+    {
+        $day = ($on ?? now())->toDateString();
+
+        $started = $this->start_date === null || $this->start_date->toDateString() <= $day;
+        $notEnded = $this->end_date === null || $this->end_date->toDateString() >= $day;
+
+        return $started && $notEnded;
+    }
+
+    /** @return HasMany<SubmissionReviewer, $this> */
+    public function submissionReviewers(): HasMany
     {
         return $this->hasMany(SubmissionReviewer::class);
     }

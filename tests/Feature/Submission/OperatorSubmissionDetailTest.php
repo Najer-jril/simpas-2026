@@ -1,0 +1,388 @@
+<?php
+
+// OPERATOR-02-02 — detail pengajuan bagi pemegang submissions.view-all: isi yang sama dengan
+// detail peneliti, ditambah reviewer, lembar evaluasi (W22), ulir, dan aksi Operator (ADR 0015).
+
+use App\Actions\ResearchOutput\SaveResearchOutput;
+use App\Models\BudgetLineItem;
+use App\Models\FieldType;
+use App\Models\FormField;
+use App\Models\FormFieldResponse;
+use App\Models\FormPhaseDetail;
+use App\Models\FormSubmission;
+use App\Models\ResearchMember;
+use App\Models\Reviewer;
+use App\Models\ReviewerFormAssignment;
+use App\Models\ReviewFormResponse;
+use App\Models\SubmissionReviewer;
+use App\Models\User;
+use App\Models\UserProfile;
+use App\Queries\Review\DecisionReadiness;
+use App\Queries\Submission\OperatorSubmissionDetail;
+use App\States\Submission\Approved;
+use App\States\Submission\Draft;
+use App\States\Submission\Submitted;
+use App\States\Submission\UnderReview;
+use App\States\Submission\Withdrawn;
+use Database\Seeders\OutputTypeDefinitionSeeder;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Testing\TestResponse;
+use Inertia\Testing\AssertableInertia as Assert;
+use Spatie\Permission\Models\Permission;
+use Spatie\Permission\Models\Role;
+
+/** @param  list<string>  $permissions */
+function detailOperator(array $permissions = ['submissions.view-all', 'reviewers.assign']): User
+{
+    $operator = User::factory()->create();
+
+    foreach ($permissions as $permission) {
+        $operator->givePermissionTo(Permission::findOrCreate($permission, 'web'));
+    }
+
+    return $operator;
+}
+
+function detailSuperAdmin(): User
+{
+    $admin = User::factory()->create();
+    $admin->assignRole(Role::findOrCreate('Super Admin', 'web'));
+
+    return $admin;
+}
+
+function sentFor(string $status, ?FormPhaseDetail $detail = null): FormSubmission
+{
+    return FormSubmission::factory()->create([
+        'is_submitted' => true,
+        'status' => $status,
+        'form_phase_detail_id' => $detail?->id,
+    ]);
+}
+
+function seatReviewer(FormSubmission $submission, string $status = 'active', string $name = 'Penilai Uji'): SubmissionReviewer
+{
+    $user = User::factory()->create(['name' => $name]);
+
+    return SubmissionReviewer::create([
+        'form_submission_id' => $submission->id,
+        'reviewer_id' => Reviewer::factory()->create(['user_id' => $user->id])->id,
+        'evaluation_status' => 'completed',
+        'status' => $status,
+    ]);
+}
+
+function joinTeam(FormSubmission $submission, string $role, string $name): User
+{
+    $user = User::factory()->create(['name' => $name]);
+    ResearchMember::factory()->create([
+        'form_submission_id' => $submission->id,
+        'user_profile_id' => UserProfile::factory()->create(['user_id' => $user->id])->id,
+        'role' => $role,
+        'status' => 'active',
+    ]);
+
+    return $user;
+}
+
+function submittedSheet(SubmissionReviewer $seat): void
+{
+    $form = evaluationFormOn(FormPhaseDetail::factory()->create(), [], title: 'Substansi');
+    $assignment = ReviewerFormAssignment::create([
+        'submission_reviewer_id' => $seat->id,
+        'review_evaluation_form_id' => $form->id,
+        'is_required' => true,
+        'assigned_at' => now(),
+        'is_active' => true,
+    ]);
+    ReviewFormResponse::create(['reviewer_form_assignment_id' => $assignment->id, 'review_evaluation_form_version_id' => $assignment->reviewEvaluationForm->latestVersion->id, 'status' => 'submitted', 'submitted_at' => now()]);
+}
+
+function showOperatorPage(User $viewer, FormSubmission $submission): TestResponse
+{
+    return test()->actingAs($viewer)->get(route('admin.submissions.show', $submission));
+}
+
+it('pengajuan APPROVED tidak menawarkan penugasan reviewer', function () {
+    showOperatorPage(detailOperator(), sentFor(Approved::class))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('operatorCan.assignReviewers', false)
+            ->where('operatorCan.replaceReviewer', false));
+});
+
+it('[SM-ACCESS-04] pemegang view-all membuka Submission/ManageShowPage', function () {
+    showOperatorPage(detailOperator(), sentFor(UnderReview::class))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Submission/ManageShowPage')
+            ->has('submission')
+            ->has('reviewers')
+            ->has('evaluationSheets')
+            ->has('threads')
+            ->has('overrideTarget')
+            ->has('operatorCan')
+            ->where('operatorCan.assignReviewers', true)
+            ->where('operatorCan.transferOwnership', true)
+            ->missing('canCreateThread')
+            ->missing('targetOutputTypes'));
+});
+
+it('draft dijawab 404', function () {
+    showOperatorPage(detailOperator(), FormSubmission::factory()->create(['status' => Draft::class]))
+        ->assertNotFound();
+});
+
+it('peneliti tanpa view-all ditolak', function () {
+    showOperatorPage(User::factory()->create(), sentFor(UnderReview::class))->assertForbidden();
+});
+
+it('[SM-SUBMIT-14] Super Admin membuka detail dan bisa menarik pengajuan APPROVED', function () {
+    showOperatorPage(detailSuperAdmin(), sentFor(Approved::class))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page->where('operatorCan.withdraw', true));
+});
+
+it('[SM-WITHDRAW-03] pengajuan UNDER_REVIEW tidak bisa ditarik', function () {
+    // BR-REV-05, BR-REV-07 — siap diputuskan: Setujui dan Tolak tersedia, tarik tidak.
+    showOperatorPage(detailOperator(), readyForDecision())
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('operatorCan.withdraw', false)
+            ->where('operatorCan.approve', true)
+            ->where('operatorCan.reject', true)
+            ->where('decisionReadiness.ready', true)
+            ->where('decisionReadiness.approvable', true));
+});
+
+it('[REV-OUTCOME-12] putaran berjalan menahan Setujui dan Tolak di halaman kelola', function () {
+    $submission = outcomeSubmission();
+    reviewerOn($submission, 'completed');
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('operatorCan.approve', false)
+            ->where('operatorCan.reject', false)
+            ->where('decisionReadiness.ready', false)
+            ->where('decisionReadiness.blockers', ['1 dari 1 penilai belum menyelesaikan putaran.'])
+            ->where('decisionReadiness.round.kind', 'assessment')
+            ->where('decisionReadiness.round.finished', 0)
+            ->where('decisionReadiness.round.total', 1));
+});
+
+it('[SM-WITHDRAW-04] pengajuan WITHDRAWN tetap membawa anggaran, anggota, dan berkas', function () {
+    $submission = sentFor(Withdrawn::class);
+    BudgetLineItem::factory()->create(['form_submission_id' => $submission->id]);
+    joinTeam($submission, ResearchMember::ROLE_MEMBER, 'Anggota Uji');
+    $field = FormField::create([
+        'form_id' => $submission->form_id,
+        'field_type_id' => FieldType::firstOrCreate(['name' => 'file'])->id,
+        'label' => 'Proposal',
+        'is_required' => false,
+        'order' => 1,
+    ]);
+    FormFieldResponse::create(['form_submission_id' => $submission->id, 'form_field_id' => $field->id, 'value' => 'form-uploads/proposal.pdf']);
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('budget.items', 1)
+            ->has('members', 2)
+            ->where('answers.0.isFile', true));
+});
+
+it('[BUD-LOCK-03] anggaran APPROVED tetap baca-saja bagi Super Admin', function () {
+    showOperatorPage(detailSuperAdmin(), sentFor(Approved::class))
+        ->assertInertia(fn (Assert $page) => $page->where('budget.editable', false));
+});
+
+it('[SM-STATE-05] perpanjangan tetap tersedia di status terminal', function () {
+    showOperatorPage(detailOperator(), sentFor(Approved::class))
+        ->assertInertia(fn (Assert $page) => $page->where('operatorCan.grantOverride', true));
+});
+
+it('[REV-ASSIGN-02] satu reviewer dari minimal dua', function () {
+    $submission = sentFor(Submitted::class);
+    seatReviewer($submission);
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('activeReviewerCount', 1)
+            ->where('minimumReviewers', 2)
+            ->where('submission.status.key', 'submitted'));
+});
+
+it('[REV-OUTCOME-10] fase butuh review tanpa reviewer', function () {
+    $submission = sentFor(Submitted::class, FormPhaseDetail::factory()->create(['needs_review' => true]));
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('needsReview', true)
+            ->where('activeReviewerCount', 0)
+            ->where('submission.status.key', 'submitted')
+            ->where('decisionReadiness.ready', false)
+            ->where('decisionReadiness.blockers', ['Belum ada penilai.']));
+});
+
+it('[REV-REASSIGN-01] reviewer yang digantikan tetap terdaftar', function () {
+    $submission = sentFor(UnderReview::class);
+    seatReviewer($submission, 'replaced', 'Penilai Lama');
+    seatReviewer($submission, 'active', 'Penilai Pengganti');
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('reviewers', 2)
+            ->where('reviewers.0.name', 'Penilai Pengganti')
+            ->where('reviewers.0.replaced', false)
+            ->where('reviewers.1.name', 'Penilai Lama')
+            ->where('reviewers.1.replaced', true)
+            ->where('reviewers.1.evaluationLabel', 'Selesai')
+            ->where('activeReviewerCount', 1));
+});
+
+it('[REV-REASSIGN-02] evaluasi reviewer yang digantikan tetap terbaca', function () {
+    $submission = sentFor(UnderReview::class);
+    submittedSheet(seatReviewer($submission, 'replaced', 'Penilai Lama'));
+    submittedSheet(seatReviewer($submission, 'active', 'Penilai Pengganti'));
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('evaluationSheets', 2)
+            ->where('evaluationSheets', fn ($sheets) => collect($sheets)->contains(
+                fn ($sheet) => $sheet['reviewer'] === 'Penilai Lama' && $sheet['replaced'] === true,
+            )));
+});
+
+it('[SM-OWNER-02] member biasa tidak ditawarkan sebagai penerima', function () {
+    $submission = sentFor(UnderReview::class);
+    $co = joinTeam($submission, ResearchMember::ROLE_CO_INVESTIGATOR, 'Sari Co');
+    joinTeam($submission, ResearchMember::ROLE_MEMBER, 'Anggota Biasa');
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('ownershipCandidates', 1)
+            ->where('ownershipCandidates.0.userId', $co->id)
+            ->where('ownershipCandidates.0.name', 'Sari Co'));
+});
+
+it('operatorCan mengikuti reviewers.assign', function () {
+    showOperatorPage(detailOperator(['submissions.view-all']), readyForDecision())
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('operatorCan.assignReviewers', false)
+            ->where('operatorCan.replaceReviewer', false)
+            ->where('operatorCan.reject', true));
+});
+
+it('target perpanjangan menyebut fase dan reviewer yang evaluasinya lewat tenggat', function () {
+    $detail = FormPhaseDetail::factory()->create();
+    $submission = sentFor(UnderReview::class, $detail);
+    $late = seatReviewer($submission, 'active', 'Penilai Telat');
+    $form = evaluationFormOn($detail, [], title: 'Substansi');
+    ReviewerFormAssignment::create([
+        'submission_reviewer_id' => $late->id, 'review_evaluation_form_id' => $form->id,
+        'is_required' => true, 'assigned_at' => now()->subWeek(), 'due_date' => now()->subDay(), 'is_active' => true,
+    ]);
+    seatReviewer($submission, 'active', 'Penilai Tepat');
+    $detail->load('formPhase');
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('overrideTarget.phaseLabel', $detail->formPhase->title.' · '.stepDate($detail)->label())
+            ->where('overrideTarget.affectedReviewers', ['Penilai Telat']));
+});
+
+it('[FE-WINDOW-07] reviewer terdampak hanya untuk override langkah pengajuan ini, bukan fase lain', function () {
+    $detail = FormPhaseDetail::factory()->create();
+    $submission = sentFor(UnderReview::class, $detail);
+    $late = seatReviewer($submission, 'active', 'Penilai Telat');
+    $form = evaluationFormOn($detail, [], title: 'Substansi');
+    ReviewerFormAssignment::create([
+        'submission_reviewer_id' => $late->id, 'review_evaluation_form_id' => $form->id,
+        'is_required' => true, 'assigned_at' => now()->subWeek(), 'due_date' => now()->subDay(), 'is_active' => true,
+    ]);
+    $monev = FormPhaseDetail::factory()->create(['form_phase_id' => $detail->form_phase_id, 'deadline_cycle' => 1]);
+
+    expect(OperatorSubmissionDetail::overrideTargetFor($submission, $monev)->affectedReviewers)->toBe([])
+        ->and(OperatorSubmissionDetail::overrideTargetFor($submission, $detail)->affectedReviewers)->toBe(['Penilai Telat']);
+});
+
+// ---------- W144: tab Luaran ----------
+
+/** @return array<string, mixed> */
+function managedOutputFixture(): array
+{
+    Storage::fake('local');
+    test()->seed(OutputTypeDefinitionSeeder::class);
+    $fx = outputUploadFixture();
+
+    $fx['output'] = SaveResearchOutput::run($fx['submission'], $fx['user'], outputInput('book', [
+        'title' => 'Panduan Hidroponik Kampus',
+        'publisher' => 'ITK Press',
+        'year' => '2026',
+    ]));
+
+    return $fx;
+}
+
+it('[RO-OUTPUT-20] Operator mengoreksi luaran dari tab Luaran', function () {
+    $fx = managedOutputFixture();
+
+    showOperatorPage(seededRole('operator'), $fx['submission'])
+        ->assertInertia(fn (Assert $page) => $page
+            ->has('outputs', 1)
+            ->where('outputs.0.headline', 'Panduan Hidroponik Kampus')
+            ->where('outputs.0.meta', 'ITK Press · 2026')
+            ->where('outputAccess.canWrite', true)
+            ->where('outputPhaseAccess.form_phase_detail_id', $fx['outputDetail']->id)
+            ->where('outputOverrideTarget.affectedReviewers', []));
+});
+
+it('perpanjang batas unggah luaran dari tab Luaran', function () {
+    $fx = managedOutputFixture();
+    $operator = seededRole('operator');
+    $this->travelTo('2026-12-10 09:00:00');
+
+    showOperatorPage($operator, $fx['submission'])
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('outputAccess.canWrite', false)
+            ->where('outputPhaseAccess.is_open', false));
+
+    $this->actingAs($operator)
+        ->post(route('admin.submissions.overrides.store', $fx['submission']), [
+            'form_phase_detail_id' => $fx['outputDetail']->id,
+            'reason' => 'Kendala unggah berkas pada hari terakhir',
+            'expires_at' => '2026-12-20 23:59:00',
+        ])
+        ->assertRedirect();
+
+    // Review Focus 5 — peneliti menulis lagi tanpa melihat alasan override (BR-FE-16).
+    $this->actingAs($fx['user'])
+        ->put(route('research-outputs.update', $fx['output']), [
+            'output_type' => 'book',
+            'metadata' => ['title' => 'Panduan Hidroponik Kampus Edisi 2', 'publisher' => 'ITK Press', 'year' => '2026'],
+        ])
+        ->assertRedirect(route('research-outputs.show', $fx['output']));
+
+    $this->actingAs($fx['user'])->get(route('research-outputs.index'))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('groups.0.access.canWrite', true)
+            ->where('groups.0.access.overrideUntil', fn (string $until) => str_starts_with($until, '2026-12-20T23:59:00')));
+});
+
+it('tab Luaran hanya untuk pengajuan APPROVED dan WITHDRAWN', function () {
+    showOperatorPage(detailOperator(), sentFor(UnderReview::class))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('outputs', null)
+            ->where('outputAccess', null)
+            ->where('outputPhaseAccess', null)
+            ->where('outputOverrideTarget', null));
+});
+
+it('kesiapan keputusan dihitung sekali per halaman kelola', function () {
+    $submission = readyForDecision();
+    // Kebijakan approve/reject dan prop decisionReadiness memakai satu hasil yang sama.
+    DecisionReadiness::partialMock()->shouldReceive('handle')->once()->passthru();
+
+    showOperatorPage(detailOperator(), $submission)
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('operatorCan.approve', true)
+            ->where('operatorCan.reject', true)
+            ->where('decisionReadiness.ready', true));
+});

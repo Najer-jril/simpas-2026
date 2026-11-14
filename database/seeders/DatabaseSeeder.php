@@ -20,12 +20,15 @@ class DatabaseSeeder extends Seeder
             PermissionSeeder::class,
             DummyUserSeeder::class,
             FieldTypeSeeder::class,
+            BudgetComponentSeeder::class,
             FormTypeSeeder::class,
             FacultySeeder::class,
             StudyProgramSeeder::class,
             OrganizationSeeder::class,
             PhaseTypeSeeder::class,
-            SubmissionDateLabelSeeder::class,
+            // W140 — spesifikasi isi enam tipe luaran.
+            OutputTypeDefinitionSeeder::class,
+            NotificationChannelSeeder::class,
         ]);
     }
 }

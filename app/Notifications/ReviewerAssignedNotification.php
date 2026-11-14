@@ -1,0 +1,46 @@
+<?php
+
+namespace App\Notifications;
+
+use App\Data\Contract\NotificationPayload;
+use App\Models\FormSubmission;
+use App\Notifications\Concerns\UsesConfiguredChannels;
+use Illuminate\Bus\Queueable;
+use Illuminate\Notifications\Messages\MailMessage;
+use Illuminate\Notifications\Notification;
+
+/**
+ * BR-REV-01 — reviewer yang ditugaskan diberi tahu.
+ *
+ * Tanpa ini reviewer baru tahu ada tugas saat kebetulan membuka aplikasi,
+ * dan tenggat evaluasinya terlanjur berjalan.
+ */
+class ReviewerAssignedNotification extends Notification
+{
+    use Queueable;
+    use UsesConfiguredChannels;
+
+    /** BR-NOT-06 — kunci deklarasi channel di notification_channel_settings. */
+    public const EVENT_TYPE = 'ReviewerAssigned';
+
+    public function __construct(private readonly FormSubmission $submission) {}
+
+    public function toMail(object $notifiable): MailMessage
+    {
+        return (new MailMessage)
+            ->subject('Penugasan penilaian baru')
+            ->line('Anda ditugaskan untuk mengevaluasi sebuah pengajuan.')
+            ->line('Pengajuan #'.$this->submission->id);
+    }
+
+    /** @return array<string, int|string|null> */
+    public function toArray(object $notifiable): array
+    {
+        return (new NotificationPayload(
+            type: 'reviewer_assigned',
+            title: 'Penugasan penilaian baru',
+            message: 'Anda ditugaskan untuk mengevaluasi sebuah pengajuan.',
+            context: ['form_submission_id' => $this->submission->id],
+        ))->toArray();
+    }
+}
